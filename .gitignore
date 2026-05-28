@@ -1,0 +1,37 @@
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/*.tfplan
+infra/terraform/tfplan
+infra/terraform/.terraform.lock.hcl
+
+# Node / backend
+backend/node_modules/
+backend/.env
+backend/.env.local
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# Python (if used)
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Secrets — never commit these
+*.pem
+*.key
+kubeconfig
+config.local.yaml
