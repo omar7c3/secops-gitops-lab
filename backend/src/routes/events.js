@@ -27,7 +27,7 @@ router.get('/feed', (req, res) => {
   return res.json({ events, lastId })
 })
 
-module.exports = router
+module.exports = { eventsRouter: router }
 
 // =============================================================================
 // Internal webhook routes — called from inside the cluster only
@@ -38,14 +38,23 @@ const internalRouter = express.Router()
 
 // POST /events/internal — called by attack.sh at each step
 internalRouter.post('/', (req, res) => {
+  console.log('[internal] content-type:', req.headers['content-type'])
+  console.log('[internal] body:', JSON.stringify(req.body))
+
   const { phase, severity, title, explanation, scenario } = req.body
+
+  // Validate required fields before touching DB
+  if (!phase || !severity || !title || !explanation) {
+    return res.status(400).json({ error: 'phase, severity, title, explanation required' })
+  }
+
   const db = getDb()
 
   // Get current active session
   const state = db.prepare('SELECT * FROM scenario_state WHERE id = 1').get()
 
   if (!state || !state.session_id) {
-    return res.status(200).json({ skipped: true })
+    return res.status(200).json({ skipped: true, reason: 'no active session' })
   }
 
   // If phase is WAITING — update state machine to waiting + record compromised_at
@@ -109,5 +118,4 @@ internalRouter.post('/window-start', (req, res) => {
   return res.status(201).json({ ok: true })
 })
 
-module.exports.eventsRouter         = router
 module.exports.eventsInternalRouter = internalRouter

@@ -83,15 +83,37 @@ router.post('/run', async (req, res) => {
     JSON.stringify({ scenario, mode }))
 
   // Run attack script inside target-app pod
+  // Script content is read from backend filesystem and piped to target-app
+  // target-app does not have the script files — backend does
   const scriptPath = path.join(SCENARIOS_DIR, `0${scenario === 'privilege-escalation' ? 1 : 2}-${scenario}`, 'attack.sh')
+  const namespace  = global.CONFIG.cluster.namespace
 
-  const namespace = global.CONFIG.cluster.namespace
-  const cmd = `kubectl exec target-app -n ${namespace} -- bash ${scriptPath}`
+  // Get target-app pod name
+  const getPodCmd = `kubectl get pod -n ${namespace} -l app=target-app -o jsonpath="{.items[0].metadata.name}"`
 
-  exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
-    if (err) console.error('[scenario] attack.sh error:', err.message)
-    if (stderr) console.error('[scenario] attack.sh stderr:', stderr)
-    console.log('[scenario] attack.sh stdout:', stdout)
+  exec(getPodCmd, (err, podName) => {
+    if (err || !podName.trim()) {
+      console.error('[scenario] could not get target-app pod name:', err?.message)
+      return
+    }
+
+    const pod = podName.trim()
+    // Copy script to pod then execute it
+    const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
+
+    exec(copyCmd, (cpErr) => {
+      if (cpErr) {
+        console.error('[scenario] failed to copy attack.sh:', cpErr.message)
+        return
+      }
+
+      const execCmd = `kubectl exec ${pod} -n ${namespace} -- bash /tmp/attack.sh`
+      exec(execCmd, { timeout: 120000 }, (execErr, stdout, stderr) => {
+        if (execErr) console.error('[scenario] attack.sh error:', execErr.message)
+        if (stderr)  console.error('[scenario] attack.sh stderr:', stderr)
+        if (stdout)  console.log('[scenario] attack.sh stdout:', stdout)
+      })
+    })
   })
 
   return res.json({ started: true, scenario, mode })
@@ -152,15 +174,35 @@ router.post('/proof', async (req, res) => {
   const namespace  = global.CONFIG.cluster.namespace
   const scriptNum  = state.scenario === 'privilege-escalation' ? '01' : '02'
   const scriptPath = path.join(SCENARIOS_DIR, `${scriptNum}-${state.scenario}`, 'proof.sh')
-  const cmd        = `kubectl exec target-app -n ${namespace} -- bash ${scriptPath}`
 
-  // Wait for proof_delay_seconds before running
   const delayMs = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
+
   setTimeout(() => {
-    exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
-      if (err) console.error('[proof] error:', err.message)
-      db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
-    })
+    // Get target-app pod name
+    exec(`kubectl get pod -n ${namespace} -l app=target-app -o jsonpath="{.items[0].metadata.name}"`,
+      (err, podName) => {
+        if (err || !podName.trim()) {
+          console.error('[proof] could not get target-app pod name')
+          db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+          return
+        }
+
+        const pod = podName.trim()
+        exec(`kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/proof.sh`, (cpErr) => {
+          if (cpErr) {
+            console.error('[proof] failed to copy proof.sh:', cpErr.message)
+            db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+            return
+          }
+
+          exec(`kubectl exec ${pod} -n ${namespace} -- bash /tmp/proof.sh`,
+            { timeout: 60000 }, (execErr, stdout, stderr) => {
+              if (execErr) console.error('[proof] error:', execErr.message)
+              if (stdout)  console.log('[proof] stdout:', stdout)
+              db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+            })
+        })
+      })
   }, delayMs)
 
   return res.json({ started: true })

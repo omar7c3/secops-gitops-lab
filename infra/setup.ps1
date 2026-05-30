@@ -506,10 +506,10 @@ function Install-PlatformComponents {
     kubectl patch configmap argocd-cm -n argocd --type=merge --patch-file $cmPatch
     Remove-Item $cmPatch
 
-    # Step 2 — set read-only permissions
-    Write-Step "Setting read-only permissions for secops-backend..."
+    # Step 2 — set permissions (get + sync required for watchdog/reset)
+    Write-Step "Setting permissions for secops-backend..."
     $rbacPatch = [System.IO.Path]::GetTempFileName() + ".json"
-    '{"data":{"policy.csv":"p, secops-backend, applications, get, */*, allow\n"}}' | Set-Content $rbacPatch -Encoding ascii
+    '{"data":{"policy.csv":"p, secops-backend, applications, get, */*, allow\np, secops-backend, applications, sync, */*, allow\n"}}' | Set-Content $rbacPatch -Encoding ascii
     kubectl patch configmap argocd-rbac-cm -n argocd --type=merge --patch-file $rbacPatch
     Remove-Item $rbacPatch
 

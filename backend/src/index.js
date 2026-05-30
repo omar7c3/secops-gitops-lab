@@ -46,6 +46,11 @@ app.get('/health', (req, res) => res.json({ status: 'ok', target: config.cluster
 // ── Public routes (no auth) ───────────────────────────────────────────────────
 app.use('/token', tokenRoutes)          // validate only
 
+// ── Internal routes (cluster-only) — BEFORE /events to avoid path conflict ───
+// /events is caught by authMiddleware — internal must use different prefix
+app.use('/internal',        eventsInternalRouter)
+app.use('/events/falco',    require('./routes/falco-webhook'))
+
 // ── Visitor routes (JWT auth) ─────────────────────────────────────────────────
 app.use('/session',  authMiddleware, sessionRoutes)
 app.use('/events',   authMiddleware, eventsRouter)
@@ -56,14 +61,9 @@ app.use('/argocd',   authMiddleware, require('./routes/argocd'))
 app.post('/admin/auth', adminAuthHandler)
 
 // ── Admin routes (JWT auth) ───────────────────────────────────────────────────
-app.use('/token',    adminMiddleware, tokenAdminRoutes)  // generate, revoke, sessions, usage
+app.use('/token',    adminMiddleware, tokenAdminRoutes)
 app.use('/admin',    adminMiddleware, adminRoutes)
 app.use('/watchdog', adminMiddleware, watchdogRoutes)
-
-// ── Internal routes (cluster-only, no external auth) ─────────────────────────
-// Called by attack.sh and Falco Sidekick webhook from inside the cluster
-app.use('/events/internal',     eventsInternalRouter)
-app.use('/events/falco',        require('./routes/falco-webhook'))
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

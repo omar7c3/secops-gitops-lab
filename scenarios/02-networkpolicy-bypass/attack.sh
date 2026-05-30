@@ -17,7 +17,7 @@ NAMESPACE="${NAMESPACE:-secops-lab}"
 
 emit() {
   local phase=$1 severity=$2 title=$3 explanation=$4
-  curl -sf -X POST "$BACKEND_URL/events/internal" \
+  curl -sf -X POST "$BACKEND_URL/internal" \
     -H "Content-Type: application/json" \
     -d "{\"phase\":\"$phase\",\"severity\":\"$severity\",\"title\":\"$title\",\"explanation\":\"$explanation\"}" \
     || true
@@ -78,7 +78,7 @@ kubectl patch application secops-lab \
 # ── Step 4: Record window open time ──────────────────────────────────────────
 WINDOW_START=$(date +%s)
 
-curl -sf -X POST "$BACKEND_URL/events/window-start" \
+curl -sf -X POST "$BACKEND_URL/internal/window-start" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"started_at\":$WINDOW_START}" \
   || true
@@ -107,7 +107,7 @@ ARGOCD_RESULT=$(curl -sf --max-time 3 http://argocd-server.argocd.svc.cluster.lo
 PROBE_RESULTS="${PROBE_RESULTS}argocd-server:80 -> $ARGOCD_RESULT\n"
 
 # Send probe results to backend
-curl -sf -X POST "$BACKEND_URL/events/probe-results" \
+curl -sf -X POST "$BACKEND_URL/internal/probe-results" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"results\":$(echo -e "$PROBE_RESULTS" | jq -Rs .)}" \
   || true

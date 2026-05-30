@@ -12,7 +12,7 @@ BACKEND_URL="${BACKEND_URL:-http://secops-backend:3000}"
 
 emit() {
   local phase=$1 severity=$2 title=$3 explanation=$4
-  curl -sf -X POST "$BACKEND_URL/events/internal" \
+  curl -sf -X POST "$BACKEND_URL/internal" \
     -H "Content-Type: application/json" \
     -d "{\"phase\":\"$phase\",\"severity\":\"$severity\",\"title\":\"$title\",\"explanation\":\"$explanation\"}" \
     || true

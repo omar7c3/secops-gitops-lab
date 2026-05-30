@@ -99,6 +99,7 @@ spec:
 # The backend pod must accept incoming connections on port 3000 from:
 #   - frontend pod (API proxy)
 #   - Falco Sidekick webhook (cross-namespace — handled separately)
+#   - target app to emit events
 # deny-all blocks all ingress so this opens port 3000 on the backend pod.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -118,6 +119,27 @@ spec:
         - port: 3000
           protocol: TCP
 
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-target-egress-to-backend
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: target-app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: secops-backend
+      ports:
+        - port: 3000
 ---
 # ── Allow postgres-seed → postgres egress (port 5432) ────────────────────────
 # The postgres-seed Job runs once at startup to create fake demo tables.
@@ -144,6 +166,7 @@ spec:
       ports:
         - port: 5432
 
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
