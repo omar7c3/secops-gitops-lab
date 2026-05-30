@@ -116,13 +116,18 @@ router.post('/run', async (req, res) => {
           // that path waits for the visitor to click Restore Protection instead.
           const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
           if (st && st.status === 'attacking') {
-            // Scenario 2 uncontrolled: give ArgoCD time to reconcile before proof
-            const proofDelay = (scenario === 'network-policy-bypass' && mode === 'uncontrolled')
-              ? (global.CONFIG.scenario.reconcile_timeout_seconds || 60) * 1000
-              : (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
-
-            console.log(`[scenario] attack exited in attacking state — auto-proof in ${proofDelay / 1000}s`)
-            setTimeout(() => execProofScript(namespace, scenario, getDb()), proofDelay)
+            if (mode === 'uncontrolled') {
+              // Scenario 2 uncontrolled: give ArgoCD time to reconcile before proof
+              const proofDelay = (scenario === 'network-policy-bypass')
+                ? (global.CONFIG.scenario.reconcile_timeout_seconds || 60) * 1000
+                : (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
+              console.log(`[scenario] attack exited — auto-proof in ${proofDelay / 1000}s`)
+              setTimeout(() => execProofScript(namespace, scenario, getDb()), proofDelay)
+            } else {
+              // Controlled mode: attack being blocked IS the demonstration — no proof needed
+              getDb().prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+              console.log('[scenario] controlled mode complete — no proof phase')
+            }
           }
         })
       })
