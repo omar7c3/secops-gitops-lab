@@ -121,18 +121,24 @@
         </div>
       </div>
 
-      <!-- Panel 3: Impact / Mitigation -->
+      <!-- Panel 3: Impact / Security Posture -->
       <div class="flex flex-col">
-        <div class="px-4 py-2 bg-gray-900 border-b border-gray-800">
+        <div class="px-4 py-2 bg-gray-900 border-b border-gray-800 flex items-center justify-between">
           <span class="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-            {{ scenario.isCompromised ? 'Impact' : 'Mitigation' }}
+            {{ scenario.isCompromised ? 'Impact' : 'Security Posture' }}
+          </span>
+          <span v-if="scenario.isComplete && scenario.securityPosture"
+                class="text-xs text-green-400 font-semibold">
+            {{ scenario.securityPosture.filter(c => c.status === 'restored').length }}
+            /{{ scenario.securityPosture.filter(c => c.status !== 'active').length }}
+            restored by GitOps
           </span>
         </div>
-        <div class="flex-1 overflow-y-auto p-3">
+        <div class="flex-1 overflow-y-auto p-3 space-y-2">
 
           <!-- Compromised cluster warning (Scenario 1 Allow Attack) -->
           <div v-if="scenario.isCompromised"
-               class="border border-red-700 bg-red-950 rounded-xl p-4 mb-3">
+               class="border border-red-700 bg-red-950 rounded-xl p-4">
             <div class="flex items-center gap-2 mb-3">
               <span class="text-red-400 text-lg">⚠</span>
               <span class="font-bold text-red-300 uppercase tracking-wide text-sm">
@@ -163,11 +169,61 @@
             </button>
           </div>
 
+          <!-- Security posture control cards -->
+          <template v-if="scenario.securityPosture">
+            <div
+              v-for="control in scenario.securityPosture"
+              :key="control.label"
+              class="rounded-lg border p-3 text-xs"
+              :class="{
+                'border-green-800 bg-green-950/30': control.status === 'active' || control.status === 'restored',
+                'border-red-800 bg-red-950/30':    control.status === 'compromised',
+                'border-yellow-800 bg-yellow-950/20': control.status === 'restoring'
+              }"
+            >
+              <div class="flex items-start gap-2">
+                <span class="mt-0.5 text-base leading-none">
+                  <span v-if="control.status === 'active'">✓</span>
+                  <span v-else-if="control.status === 'restored'">✓</span>
+                  <span v-else-if="control.status === 'compromised'">✗</span>
+                  <span v-else>↺</span>
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-mono font-semibold truncate"
+                       :class="{
+                         'text-green-300': control.status === 'active' || control.status === 'restored',
+                         'text-red-300':   control.status === 'compromised',
+                         'text-yellow-300': control.status === 'restoring'
+                       }">
+                    {{ control.label }}
+                  </div>
+                  <div class="text-gray-400 mt-0.5 leading-relaxed">{{ control.description }}</div>
+                  <div v-if="control.status === 'compromised'"
+                       class="text-red-400 mt-1 font-semibold">
+                    Deleted by attacker
+                  </div>
+                  <div v-if="control.status === 'restoring'"
+                       class="text-yellow-400 mt-1">
+                    ArgoCD reconciling...
+                  </div>
+                  <div v-if="control.status === 'restored'"
+                       class="text-green-400 mt-1">
+                    Restored by {{ control.restoredBy }}
+                  </div>
+                  <div v-if="control.note"
+                       class="text-blue-400 mt-1 italic">
+                    {{ control.note }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- Stolen data sample -->
           <StolenDataPanel v-if="stolenData" :data="stolenData" />
 
           <!-- Lateral movement window (Scenario 2) -->
-          <div v-if="scenario.windowSeconds > 0 && !scenario.isIdle" class="mb-3">
+          <div v-if="scenario.windowSeconds > 0 && !scenario.isIdle">
             <div class="bg-orange-950 border border-orange-700 rounded-lg p-3">
               <div class="text-xs text-orange-300 font-semibold mb-1">
                 Lateral Movement Window
@@ -183,7 +239,7 @@
 
           <!-- Idle state -->
           <div v-if="scenario.isIdle" class="text-gray-600 text-center py-8 text-xs">
-            Run a scenario to see impact or mitigation details here
+            Run a scenario to see security controls here
           </div>
         </div>
       </div>

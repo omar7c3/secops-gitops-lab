@@ -279,22 +279,24 @@ function execProofScript(namespace, scenario, db) {
     })
 }
 
-// ── Helper — wait for a Running pod matching label ────────────────────────────
-// SA swap triggers a rollout; poll until a Ready pod exists or timeout
+// ── Helper — wait for deployment rollout then return the new Running pod ──────
+// Uses kubectl rollout status to wait for the new RS to become available,
+// avoiding the race where the OLD pod is still Running right after a SA swap.
 function waitForRunningPod(namespace, appLabel, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs
-    const cmd = `kubectl get pod -n ${namespace} -l app=${appLabel} --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}"`
+    const timeoutSec = Math.floor(timeoutMs / 1000)
+    const rolloutCmd = `kubectl rollout status deployment/${appLabel} -n ${namespace} --timeout=${timeoutSec}s`
 
-    const poll = () => {
-      exec(cmd, (err, stdout) => {
+    exec(rolloutCmd, { timeout: timeoutMs + 5000 }, (err) => {
+      if (err) return reject(new Error(`rollout did not complete for ${appLabel}: ${err.message}`))
+
+      const getCmd = `kubectl get pod -n ${namespace} -l app=${appLabel} --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}"`
+      exec(getCmd, (err2, stdout) => {
         const name = stdout?.trim()
-        if (!err && name) return resolve(name)
-        if (Date.now() >= deadline) return reject(new Error(`no Running pod for app=${appLabel} after ${timeoutMs}ms`))
-        setTimeout(poll, 3000)
+        if (!err2 && name) return resolve(name)
+        reject(new Error(`no Running pod found for app=${appLabel} after rollout`))
       })
-    }
-    poll()
+    })
   })
 }
 
