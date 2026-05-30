@@ -29,6 +29,9 @@ export const useScenarioStore = defineStore('scenario', () => {
   const isIdle = computed(() =>
     scenarioState.value.status === 'idle')
 
+  const isComplete = computed(() =>
+    scenarioState.value.status === 'complete')
+
   const timelineEvents = computed(() => {
     // Group events by phase for timeline bar
     const phases = ['SETUP','ATTACK','DETECT','IMPACT','WAITING','RESTORE','RECONCILE','PROOF']
@@ -124,7 +127,7 @@ export const useScenarioStore = defineStore('scenario', () => {
 
   return {
     events, scenarioState, argocdState, dwellSeconds, windowSeconds,
-    isCompromised, isAttacking, isIdle, timelineEvents,
+    isCompromised, isAttacking, isIdle, isComplete, timelineEvents,
     startPolling, stopPolling,
     runScenario, restoreProtection, runProof, resetScenario
   }

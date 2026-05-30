@@ -195,8 +195,8 @@
     <!-- Controls -->
     <div class="border-t border-gray-800 px-6 py-3 flex items-center gap-3">
       <button
-        @click="showModeModal = true"
-        :disabled="!scenario.isIdle"
+        @click="handleRunOrReset"
+        :disabled="!scenario.isIdle && !scenario.isComplete"
         class="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500
                text-white font-semibold px-5 py-2 rounded-lg text-sm transition-colors"
       >
@@ -204,6 +204,7 @@
           <span class="w-3 h-3 border-2 border-gray-400 border-t-white rounded-full animate-spin"></span>
           Attack in progress...
         </span>
+        <span v-else-if="scenario.isComplete">▶ Run Again</span>
         <span v-else>▶ Run Scenario</span>
       </button>
 
@@ -280,6 +281,13 @@ const systemHealthColor = computed(() => {
   if (apps.some(a => a.syncStatus !== 'Synced')) return 'bg-red-500 animate-pulse'
   return 'bg-green-500'
 })
+
+async function handleRunOrReset() {
+  if (scenario.isComplete) {
+    await scenario.resetScenario()
+  }
+  showModeModal.value = true
+}
 
 async function handleRunScenario({ mode }) {
   showModeModal.value = false
