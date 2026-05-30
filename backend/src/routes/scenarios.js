@@ -93,13 +93,15 @@ router.post('/run', async (req, res) => {
   // SA swap triggers a rollout — wait for a Running pod before proceeding
   waitForRunningPod(namespace, 'target-app', 60000)
     .then(async pod => {
-      // S2 uncontrolled: delete Kyverno guard HERE, immediately before the attack,
-      // so ArgoCD self-heal has no time to restore it before attack.sh runs
+      // S2 uncontrolled: suspend secops-lab-policies ArgoCD app FIRST so ArgoCD
+      // cannot restore protect-networkpolicies via self-heal (it re-creates in <3s).
+      // secops-lab app stays active — it will auto-reconcile deny-all (~30s).
       if (scenario === 'network-policy-bypass' && mode === 'uncontrolled') {
+        await k8s.suspendArgoCDSync('secops-lab-policies').catch(() => {})
         await k8s.deleteKyvernoPolicy('protect-networkpolicies').catch(() => {})
         emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
           'Backend deleting Kyverno policy: protect-networkpolicies',
-          'Backend removes the Kyverno policy protecting NetworkPolicy resources. Pod will now be able to delete it using the network-tooling-sa token.')
+          'Backend suspends the policies ArgoCD app and removes protect-networkpolicies. The pod can now delete the deny-all NetworkPolicy — but cannot suspend ArgoCD secops-lab, so that app will auto-reconcile the deletion.')
       }
 
       const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
@@ -121,11 +123,15 @@ router.post('/run', async (req, res) => {
           const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
           if (st && st.status === 'attacking') {
             if (mode === 'uncontrolled') {
-              // Scenario 2 uncontrolled: give ArgoCD time to reconcile before proof
               const proofDelay = (scenario === 'network-policy-bypass')
                 ? (global.CONFIG.scenario.reconcile_timeout_seconds || 60) * 1000
                 : (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
               console.log(`[scenario] attack exited — auto-proof in ${proofDelay / 1000}s`)
+              // S2: resume policies app so ArgoCD restores protect-networkpolicies
+              // before proof runs (proof tries to delete deny-all — should be blocked)
+              if (scenario === 'network-policy-bypass') {
+                k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
+              }
               setTimeout(() => execProofScript(namespace, scenario, getDb()), proofDelay)
             } else {
               // Controlled mode: attack being blocked IS the demonstration — no proof needed
@@ -204,17 +210,19 @@ router.post('/reset', async (req, res) => {
   const db  = getDb()
   const now = Math.floor(Date.now() / 1000)
 
-  // Resume ArgoCD sync if suspended
+  // Resume ArgoCD sync if suspended (both apps — S2 suspends secops-lab-policies)
   await k8s.resumeArgoCDSync('secops-lab').catch(() => {})
+  await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
   await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
 
   // Trigger ArgoCD hard sync
   await k8s.syncArgoCD('secops-lab').catch(() => {})
   await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
 
-  // Delete attack artifact pods that ArgoCD won't prune (not in Git)
+  // Delete attack artifacts ArgoCD won't prune (not in Git)
   const namespace = global.CONFIG.cluster.namespace
   exec(`kubectl delete pod privileged-attack-pod -n ${namespace} --ignore-not-found`, () => {})
+  exec(`kubectl delete networkpolicy attacker-postgres-exfil -n ${namespace} --ignore-not-found`, () => {})
 
   // Clear event feed for this session
   const state = db.prepare('SELECT * FROM scenario_state WHERE id = 1').get()
