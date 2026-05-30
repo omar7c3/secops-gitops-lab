@@ -37,29 +37,33 @@ router.post('/run', async (req, res) => {
 
   const now = Math.floor(Date.now() / 1000)
 
-  // ── Allow Attack setup ──────────────────────────────────────────────────────
-  if (mode === 'uncontrolled') {
-    if (scenario === 'privilege-escalation') {
-      // Swap SA to over-privileged-sa
-      await k8s.swapServiceAccount('target-app', 'over-privileged-sa', true)
-      emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
-        'Swapping service account to over-privileged-sa',
-        'Backend patches target-app deployment. This mimics a common misconfiguration — an app given more Kubernetes API access than it needs. automountServiceAccountToken is now true.')
-    }
+  // ── Setup — differs by scenario and mode ────────────────────────────────────
+  if (scenario === 'privilege-escalation' && mode === 'uncontrolled') {
+    await k8s.swapServiceAccount('target-app', 'over-privileged-sa', true)
+    emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
+      'Swapping service account to over-privileged-sa',
+      'Backend patches target-app deployment. This mimics a common misconfiguration — an app given more Kubernetes API access than it needs. automountServiceAccountToken is now true.')
+  }
 
-    if (scenario === 'network-policy-bypass') {
-      // Delete Kyverno protect-networkpolicies policy
+  if (scenario === 'network-policy-bypass') {
+    if (mode === 'uncontrolled') {
+      // Allow Attack: remove Kyverno guard so the pod can delete NetworkPolicies
       await k8s.deleteKyvernoPolicy('protect-networkpolicies')
       emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
         'Backend deleting Kyverno policy: protect-networkpolicies',
-        'Backend removes the one Kyverno policy protecting NetworkPolicy resources. Pod will now be able to delete it using the network-tooling-sa token.')
-
-      // Swap SA to network-tooling-sa
-      await k8s.swapServiceAccount('target-app', 'network-tooling-sa', true)
-      emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
-        'Swapping SA to network-tooling-sa',
-        'Backend patches target-app to mount network-tooling-sa. This SA has NetworkPolicy delete rights but cannot touch ArgoCD.')
+        'Backend removes the Kyverno policy protecting NetworkPolicy resources. Pod will now be able to delete it using the network-tooling-sa token.')
+    } else {
+      // With Protection: still mount network-tooling-sa so attack.sh can demonstrate
+      // that Kyverno blocks the deletion even with the right SA token available.
+      emitEvent(req.user.sessionId, 'SETUP', 'INFO', scenario,
+        'Mounting network-tooling-sa — Kyverno guard remains active',
+        'SA gives NetworkPolicy delete rights, but protect-networkpolicies Kyverno policy is still running. Watch what happens at admission.')
     }
+    // Both modes: swap SA so attack.sh has a token to work with
+    await k8s.swapServiceAccount('target-app', 'network-tooling-sa', true)
+    emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
+      'Swapping SA to network-tooling-sa',
+      'Backend patches target-app to mount network-tooling-sa. This SA has NetworkPolicy delete rights but cannot touch ArgoCD.')
   }
 
   // Update state machine
@@ -102,6 +106,21 @@ router.post('/run', async (req, res) => {
           if (execErr) console.error('[scenario] attack.sh error:', execErr.message)
           if (stderr)  console.error('[scenario] attack.sh stderr:', stderr)
           if (stdout)  console.log('[scenario] attack.sh stdout:', stdout)
+
+          // If attack exited without reaching the WAITING phase (controlled mode,
+          // or scenario 2 where there is no manual restore step), auto-run proof.
+          // Scenario 1 uncontrolled sets status='waiting' via the WAITING event —
+          // that path waits for the visitor to click Restore Protection instead.
+          const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
+          if (st && st.status === 'attacking') {
+            // Scenario 2 uncontrolled: give ArgoCD time to reconcile before proof
+            const proofDelay = (scenario === 'network-policy-bypass' && mode === 'uncontrolled')
+              ? (global.CONFIG.scenario.reconcile_timeout_seconds || 60) * 1000
+              : (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
+
+            console.log(`[scenario] attack exited in attacking state — auto-proof in ${proofDelay / 1000}s`)
+            setTimeout(() => execProofScript(namespace, scenario, getDb()), proofDelay)
+          }
         })
       })
     })
@@ -160,36 +179,10 @@ router.post('/proof', async (req, res) => {
     return res.status(409).json({ error: 'no scenario to prove' })
   }
 
-  db.prepare(`UPDATE scenario_state SET status = 'proof' WHERE id = 1`).run()
+  const namespace = global.CONFIG.cluster.namespace
+  const delayMs   = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
 
-  const namespace  = global.CONFIG.cluster.namespace
-  const scriptNum  = state.scenario === 'privilege-escalation' ? '01' : '02'
-  const scriptPath = path.join(SCENARIOS_DIR, `${scriptNum}-${state.scenario}`, 'proof.sh')
-
-  const delayMs = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
-
-  setTimeout(() => {
-    waitForRunningPod(namespace, 'target-app', 60000)
-      .then(pod => {
-        exec(`kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/proof.sh`, (cpErr) => {
-          if (cpErr) {
-            console.error('[proof] failed to copy proof.sh:', cpErr.message)
-            db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
-            return
-          }
-          exec(`kubectl exec ${pod} -n ${namespace} -- bash /tmp/proof.sh`,
-            { timeout: 60000 }, (execErr, stdout, stderr) => {
-              if (execErr) console.error('[proof] error:', execErr.message)
-              if (stdout)  console.log('[proof] stdout:', stdout)
-              db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
-            })
-        })
-      })
-      .catch(err => {
-        console.error('[proof] timed out waiting for target-app pod:', err.message)
-        db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
-      })
-  }, delayMs)
+  setTimeout(() => execProofScript(namespace, state.scenario, db), delayMs)
 
   return res.json({ started: true })
 })
@@ -206,6 +199,10 @@ router.post('/reset', async (req, res) => {
   // Trigger ArgoCD hard sync
   await k8s.syncArgoCD('secops-lab').catch(() => {})
   await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
+
+  // Delete attack artifact pods that ArgoCD won't prune (not in Git)
+  const namespace = global.CONFIG.cluster.namespace
+  exec(`kubectl delete pod privileged-attack-pod -n ${namespace} --ignore-not-found`, () => {})
 
   // Clear event feed for this session
   const state = db.prepare('SELECT * FROM scenario_state WHERE id = 1').get()
@@ -244,6 +241,35 @@ router.get('/state', (req, res) => {
 
   return res.json(state)
 })
+
+// ── Helper — copy and run proof.sh inside target-app, set state to complete ───
+function execProofScript(namespace, scenario, db) {
+  const scriptNum  = scenario === 'privilege-escalation' ? '01' : '02'
+  const scriptPath = path.join(SCENARIOS_DIR, `${scriptNum}-${scenario}`, 'proof.sh')
+
+  db.prepare(`UPDATE scenario_state SET status = 'proof' WHERE id = 1`).run()
+
+  waitForRunningPod(namespace, 'target-app', 60000)
+    .then(pod => {
+      exec(`kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/proof.sh`, (cpErr) => {
+        if (cpErr) {
+          console.error('[proof] failed to copy proof.sh:', cpErr.message)
+          db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+          return
+        }
+        exec(`kubectl exec ${pod} -n ${namespace} -- bash /tmp/proof.sh`,
+          { timeout: 60000 }, (execErr, stdout, stderr) => {
+            if (execErr) console.error('[proof] error:', execErr.message)
+            if (stdout)  console.log('[proof] stdout:', stdout)
+            db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+          })
+      })
+    })
+    .catch(err => {
+      console.error('[proof] timed out waiting for target-app pod:', err.message)
+      db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+    })
+}
 
 // ── Helper — wait for a Running pod matching label ────────────────────────────
 // SA swap triggers a rollout; poll until a Ready pod exists or timeout

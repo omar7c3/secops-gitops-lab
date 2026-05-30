@@ -57,13 +57,12 @@ router.post('/validate', (req, res) => {
     })
   }
 
-  // Check for active session on this token
+  // Block if any session is active system-wide (max_concurrent: 1)
   const activeSession = db.prepare(`
     SELECT * FROM sessions
-    WHERE token_id = ?
-      AND ended_at IS NULL
+    WHERE ended_at IS NULL
       AND expires_at > ?
-  `).get(token.id, Math.floor(Date.now() / 1000))
+  `).get(Math.floor(Date.now() / 1000))
 
   if (activeSession) {
     db.prepare(`

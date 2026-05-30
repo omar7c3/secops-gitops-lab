@@ -290,7 +290,9 @@ async function handleRestore() {
   restoring.value = true
   try {
     await scenario.restoreProtection()
-    setTimeout(() => scenario.runProof(), 5000)
+    // Wait 45s for ArgoCD to reconcile Kyverno policies before running proof
+    // Proof must run after no-privileged-containers is restored or it may succeed
+    setTimeout(() => scenario.runProof(), 45000)
   } finally {
     restoring.value = false
   }
