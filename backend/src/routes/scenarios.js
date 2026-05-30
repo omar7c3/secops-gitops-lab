@@ -13,7 +13,7 @@ const k8s      = require('./k8s-client')
 
 const router = express.Router()
 
-const SCENARIOS_DIR = path.resolve(__dirname, '../../../scenarios')
+const SCENARIOS_DIR = path.resolve(__dirname, '../../scenarios')
 
 // ── POST /scenario/run ────────────────────────────────────────────────────────
 router.post('/run', async (req, res) => {
@@ -46,20 +46,14 @@ router.post('/run', async (req, res) => {
   }
 
   if (scenario === 'network-policy-bypass') {
-    if (mode === 'uncontrolled') {
-      // Allow Attack: remove Kyverno guard so the pod can delete NetworkPolicies
-      await k8s.deleteKyvernoPolicy('protect-networkpolicies')
-      emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
-        'Backend deleting Kyverno policy: protect-networkpolicies',
-        'Backend removes the Kyverno policy protecting NetworkPolicy resources. Pod will now be able to delete it using the network-tooling-sa token.')
-    } else {
-      // With Protection: still mount network-tooling-sa so attack.sh can demonstrate
-      // that Kyverno blocks the deletion even with the right SA token available.
+    if (mode === 'controlled') {
       emitEvent(req.user.sessionId, 'SETUP', 'INFO', scenario,
         'Mounting network-tooling-sa — Kyverno guard remains active',
         'SA gives NetworkPolicy delete rights, but protect-networkpolicies Kyverno policy is still running. Watch what happens at admission.')
     }
     // Both modes: swap SA so attack.sh has a token to work with
+    // For uncontrolled: deleteKyvernoPolicy happens AFTER pod rollout (see below)
+    // to avoid ArgoCD self-heal restoring the policy before the attack runs
     await k8s.swapServiceAccount('target-app', 'network-tooling-sa', true)
     emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
       'Swapping SA to network-tooling-sa',
@@ -94,7 +88,16 @@ router.post('/run', async (req, res) => {
 
   // SA swap triggers a rollout — wait for a Running pod before proceeding
   waitForRunningPod(namespace, 'target-app', 60000)
-    .then(pod => {
+    .then(async pod => {
+      // S2 uncontrolled: delete Kyverno guard HERE, immediately before the attack,
+      // so ArgoCD self-heal has no time to restore it before attack.sh runs
+      if (scenario === 'network-policy-bypass' && mode === 'uncontrolled') {
+        await k8s.deleteKyvernoPolicy('protect-networkpolicies').catch(() => {})
+        emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
+          'Backend deleting Kyverno policy: protect-networkpolicies',
+          'Backend removes the Kyverno policy protecting NetworkPolicy resources. Pod will now be able to delete it using the network-tooling-sa token.')
+      }
+
       const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
       exec(copyCmd, (cpErr) => {
         if (cpErr) {

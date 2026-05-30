@@ -26,3 +26,20 @@ metadata:
     secops-lab/needs-api-access: "true"   # Exempts from automount policy
 # Token IS mounted — this is the misconfiguration being demonstrated
 automountServiceAccountToken: true
+
+---
+# ClusterRoleBinding — the over-permission: full cluster-admin access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: over-privileged-sa-cluster-admin
+  labels:
+    app.kubernetes.io/managed-by: argocd
+subjects:
+  - kind: ServiceAccount
+    name: over-privileged-sa
+    namespace: secops-lab
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: cluster-admin

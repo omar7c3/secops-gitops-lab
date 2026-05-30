@@ -23,31 +23,55 @@ try {
   console.log('[k8s] loaded local kubeconfig')
 }
 
-const appsApi   = kc.makeApiClient(k8s.AppsV1Api)
 const customApi = kc.makeApiClient(k8s.CustomObjectsApi)
 
 const NAMESPACE = process.env.NAMESPACE || 'secops-lab'
 
 // ── Swap service account on target-app deployment ─────────────────────────────
-async function swapServiceAccount(deploymentName, saName, mountToken) {
-  const patch = {
+// Uses kubectl patch — the k8s client typed API defaults to wrong Content-Type.
+// When mounting a token, adds secops-lab/needs-api-access: "true" to satisfy
+// the disallow-automount-sa-token Kyverno policy exception. ArgoCD removes it
+// on reconcile.
+function swapServiceAccount(deploymentName, saName, mountToken) {
+  const patch = JSON.stringify({
     spec: {
       template: {
+        metadata: {
+          labels: { 'secops-lab/needs-api-access': mountToken ? 'true' : null }
+        },
         spec: {
           serviceAccountName:           saName,
           automountServiceAccountToken: mountToken
         }
       }
     }
-  }
+  })
 
-  await appsApi.patchNamespacedDeployment({
-    name:      deploymentName,
-    namespace: NAMESPACE,
-    body:      patch
-  }, { headers: { 'Content-Type': 'application/merge-patch+json' } })
+  return new Promise((resolve, reject) => {
+    const { exec } = require('child_process')
+    exec(
+      `kubectl patch deployment ${deploymentName} -n ${NAMESPACE} --type=merge -p '${patch}'`,
+      (err) => {
+        if (err) return reject(err)
+        console.log(`[k8s] swapped SA on ${deploymentName} -> ${saName} (mount: ${mountToken})`)
+        resolve()
+      }
+    )
+  })
+}
 
-  console.log(`[k8s] swapped SA on ${deploymentName} -> ${saName} (mount: ${mountToken})`)
+// ── kubectl patch helper — bypasses Content-Type bug in k8s client v1.4 ──────
+function kubectlPatch(resource, namespace, patchJson) {
+  const { exec } = require('child_process')
+  return new Promise((resolve, reject) => {
+    exec(
+      `kubectl patch ${resource} -n ${namespace} --type=merge -p '${patchJson}'`,
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message))
+        resolve(stdout.trim())
+      }
+    )
+  })
 }
 
 // ── Delete a Kyverno ClusterPolicy ────────────────────────────────────────────
@@ -69,28 +93,18 @@ async function deleteKyvernoPolicy(policyName) {
   }
 }
 
-// ArgoCD Applications are namespace-scoped — they live in the argocd namespace
-const ARGOCD_PARAMS = { group: 'argoproj.io', version: 'v1alpha1', namespace: 'argocd', plural: 'applications' }
-const MERGE_PATCH   = { headers: { 'Content-Type': 'application/merge-patch+json' } }
-
 // ── Suspend ArgoCD sync ────────────────────────────────────────────────────────
-async function suspendArgoCDSync(appName) {
-  await customApi.patchNamespacedCustomObject({
-    ...ARGOCD_PARAMS,
-    name: appName,
-    body: { spec: { syncPolicy: { automated: null } } }
-  }, MERGE_PATCH)
-  console.log(`[k8s] suspended ArgoCD sync: ${appName}`)
+function suspendArgoCDSync(appName) {
+  return kubectlPatch(`application/${appName}`, 'argocd',
+    '{"spec":{"syncPolicy":{"automated":null}}}')
+    .then(() => console.log(`[k8s] suspended ArgoCD sync: ${appName}`))
 }
 
 // ── Resume ArgoCD sync ────────────────────────────────────────────────────────
-async function resumeArgoCDSync(appName) {
-  await customApi.patchNamespacedCustomObject({
-    ...ARGOCD_PARAMS,
-    name: appName,
-    body: { spec: { syncPolicy: { automated: { prune: true, selfHeal: true } } } }
-  }, MERGE_PATCH)
-  console.log(`[k8s] resumed ArgoCD sync: ${appName}`)
+function resumeArgoCDSync(appName) {
+  return kubectlPatch(`application/${appName}`, 'argocd',
+    '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}')
+    .then(() => console.log(`[k8s] resumed ArgoCD sync: ${appName}`))
 }
 
 // ── Trigger ArgoCD hard sync via ArgoCD REST API ──────────────────────────────

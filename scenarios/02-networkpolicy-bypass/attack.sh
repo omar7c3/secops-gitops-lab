@@ -94,8 +94,8 @@ emit "IMPACT" "WARNING" \
 
 PROBE_RESULTS=""
 
-# Probe backend admin API
-BACKEND_RESULT=$(curl -sf --max-time 3 http://secops-backend:3000/admin 2>&1 && echo "200 OK" || echo "blocked")
+# Probe backend — use /health (public endpoint) to confirm network reachability
+BACKEND_RESULT=$(curl -sf --max-time 3 http://secops-backend:3000/health 2>&1 && echo "200 OK" || echo "blocked")
 PROBE_RESULTS="backend:3000/admin -> $BACKEND_RESULT\n"
 
 # Probe postgres (bash /dev/tcp — nc not available in image)

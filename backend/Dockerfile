@@ -11,10 +11,11 @@ RUN apk add --no-cache curl && \
     curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
     chmod +x kubectl && mv kubectl /usr/local/bin/
 
-COPY package*.json ./
+COPY backend/package*.json ./
 RUN npm ci --omit=dev
 
-COPY src/ ./src/
+COPY backend/src/ ./src/
+COPY scenarios/ ./scenarios/
 
 # Data dir for SQLite
 RUN mkdir -p /app/data
