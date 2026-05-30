@@ -200,14 +200,17 @@
         class="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500
                text-white font-semibold px-5 py-2 rounded-lg text-sm transition-colors"
       >
-        ▶ Run Scenario
+        <span v-if="scenario.isAttacking" class="flex items-center gap-2">
+          <span class="w-3 h-3 border-2 border-gray-400 border-t-white rounded-full animate-spin"></span>
+          Attack in progress...
+        </span>
+        <span v-else>▶ Run Scenario</span>
       </button>
 
       <button
         @click="handleReset"
-        :disabled="scenario.isAttacking"
         class="border border-gray-700 hover:border-gray-500 text-gray-400 hover:text-white
-               disabled:opacity-50 px-4 py-2 rounded-lg text-sm transition-colors"
+               px-4 py-2 rounded-lg text-sm transition-colors"
       >
         🔄 Reset to Safe State
       </button>
