@@ -83,7 +83,11 @@ router.post('/run', async (req, res) => {
   // Run attack script inside target-app pod
   // Script content is read from backend filesystem and piped to target-app
   // target-app does not have the script files — backend does
-  const scriptPath = path.join(SCENARIOS_DIR, `0${scenario === 'privilege-escalation' ? 1 : 2}-${scenario}`, 'attack.sh')
+  const SCENARIO_DIRS = {
+    'privilege-escalation':  '01-privilege-escalation',
+    'network-policy-bypass': '02-networkpolicy-bypass'
+  }
+  const scriptPath = path.join(SCENARIOS_DIR, SCENARIO_DIRS[scenario], 'attack.sh')
   const namespace  = global.CONFIG.cluster.namespace
 
   // SA swap triggers a rollout — wait for a Running pod before proceeding
@@ -252,8 +256,11 @@ router.get('/state', (req, res) => {
 
 // ── Helper — copy and run proof.sh inside target-app, set state to complete ───
 function execProofScript(namespace, scenario, db) {
-  const scriptNum  = scenario === 'privilege-escalation' ? '01' : '02'
-  const scriptPath = path.join(SCENARIOS_DIR, `${scriptNum}-${scenario}`, 'proof.sh')
+  const SCENARIO_DIRS = {
+    'privilege-escalation':  '01-privilege-escalation',
+    'network-policy-bypass': '02-networkpolicy-bypass'
+  }
+  const scriptPath = path.join(SCENARIOS_DIR, SCENARIO_DIRS[scenario], 'proof.sh')
 
   db.prepare(`UPDATE scenario_state SET status = 'proof' WHERE id = 1`).run()
 
