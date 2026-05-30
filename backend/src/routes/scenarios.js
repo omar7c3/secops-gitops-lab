@@ -277,20 +277,23 @@ function execProofScript(namespace, scenario, db) {
       exec(`kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/proof.sh`, (cpErr) => {
         if (cpErr) {
           console.error('[proof] failed to copy proof.sh:', cpErr.message)
-          db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+          const now2 = Math.floor(Date.now() / 1000)
+          db.prepare(`UPDATE scenario_state SET status = 'complete', window_ended_at = COALESCE(window_ended_at, CASE WHEN window_started_at IS NOT NULL THEN ? ELSE NULL END) WHERE id = 1`).run(now2)
           return
         }
         exec(`kubectl exec ${pod} -n ${namespace} -- bash /tmp/proof.sh`,
           { timeout: 60000 }, (execErr, stdout, stderr) => {
             if (execErr) console.error('[proof] error:', execErr.message)
             if (stdout)  console.log('[proof] stdout:', stdout)
-            db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+            const now2 = Math.floor(Date.now() / 1000)
+            db.prepare(`UPDATE scenario_state SET status = 'complete', window_ended_at = COALESCE(window_ended_at, CASE WHEN window_started_at IS NOT NULL THEN ? ELSE NULL END) WHERE id = 1`).run(now2)
           })
       })
     })
     .catch(err => {
       console.error('[proof] timed out waiting for target-app pod:', err.message)
-      db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
+      const now2 = Math.floor(Date.now() / 1000)
+      db.prepare(`UPDATE scenario_state SET status = 'complete', window_ended_at = COALESCE(window_ended_at, CASE WHEN window_started_at IS NOT NULL THEN ? ELSE NULL END) WHERE id = 1`).run(now2)
     })
 }
 
