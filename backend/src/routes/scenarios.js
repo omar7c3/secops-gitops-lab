@@ -88,33 +88,24 @@ router.post('/run', async (req, res) => {
   const scriptPath = path.join(SCENARIOS_DIR, `0${scenario === 'privilege-escalation' ? 1 : 2}-${scenario}`, 'attack.sh')
   const namespace  = global.CONFIG.cluster.namespace
 
-  // Get target-app pod name
-  const getPodCmd = `kubectl get pod -n ${namespace} -l app=target-app -o jsonpath="{.items[0].metadata.name}"`
-
-  exec(getPodCmd, (err, podName) => {
-    if (err || !podName.trim()) {
-      console.error('[scenario] could not get target-app pod name:', err?.message)
-      return
-    }
-
-    const pod = podName.trim()
-    // Copy script to pod then execute it
-    const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
-
-    exec(copyCmd, (cpErr) => {
-      if (cpErr) {
-        console.error('[scenario] failed to copy attack.sh:', cpErr.message)
-        return
-      }
-
-      const execCmd = `kubectl exec ${pod} -n ${namespace} -- bash /tmp/attack.sh`
-      exec(execCmd, { timeout: 120000 }, (execErr, stdout, stderr) => {
-        if (execErr) console.error('[scenario] attack.sh error:', execErr.message)
-        if (stderr)  console.error('[scenario] attack.sh stderr:', stderr)
-        if (stdout)  console.log('[scenario] attack.sh stdout:', stdout)
+  // SA swap triggers a rollout — wait for a Running pod before proceeding
+  waitForRunningPod(namespace, 'target-app', 60000)
+    .then(pod => {
+      const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
+      exec(copyCmd, (cpErr) => {
+        if (cpErr) {
+          console.error('[scenario] failed to copy attack.sh:', cpErr.message)
+          return
+        }
+        const execCmd = `kubectl exec ${pod} -n ${namespace} -- bash /tmp/attack.sh`
+        exec(execCmd, { timeout: 120000 }, (execErr, stdout, stderr) => {
+          if (execErr) console.error('[scenario] attack.sh error:', execErr.message)
+          if (stderr)  console.error('[scenario] attack.sh stderr:', stderr)
+          if (stdout)  console.log('[scenario] attack.sh stdout:', stdout)
+        })
       })
     })
-  })
+    .catch(err => console.error('[scenario] timed out waiting for target-app pod:', err.message))
 
   return res.json({ started: true, scenario, mode })
 })
@@ -178,23 +169,14 @@ router.post('/proof', async (req, res) => {
   const delayMs = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
 
   setTimeout(() => {
-    // Get target-app pod name
-    exec(`kubectl get pod -n ${namespace} -l app=target-app -o jsonpath="{.items[0].metadata.name}"`,
-      (err, podName) => {
-        if (err || !podName.trim()) {
-          console.error('[proof] could not get target-app pod name')
-          db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
-          return
-        }
-
-        const pod = podName.trim()
+    waitForRunningPod(namespace, 'target-app', 60000)
+      .then(pod => {
         exec(`kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/proof.sh`, (cpErr) => {
           if (cpErr) {
             console.error('[proof] failed to copy proof.sh:', cpErr.message)
             db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
             return
           }
-
           exec(`kubectl exec ${pod} -n ${namespace} -- bash /tmp/proof.sh`,
             { timeout: 60000 }, (execErr, stdout, stderr) => {
               if (execErr) console.error('[proof] error:', execErr.message)
@@ -202,6 +184,10 @@ router.post('/proof', async (req, res) => {
               db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
             })
         })
+      })
+      .catch(err => {
+        console.error('[proof] timed out waiting for target-app pod:', err.message)
+        db.prepare(`UPDATE scenario_state SET status = 'complete' WHERE id = 1`).run()
       })
   }, delayMs)
 
@@ -258,6 +244,25 @@ router.get('/state', (req, res) => {
 
   return res.json(state)
 })
+
+// ── Helper — wait for a Running pod matching label ────────────────────────────
+// SA swap triggers a rollout; poll until a Ready pod exists or timeout
+function waitForRunningPod(namespace, appLabel, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs
+    const cmd = `kubectl get pod -n ${namespace} -l app=${appLabel} --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}"`
+
+    const poll = () => {
+      exec(cmd, (err, stdout) => {
+        const name = stdout?.trim()
+        if (!err && name) return resolve(name)
+        if (Date.now() >= deadline) return reject(new Error(`no Running pod for app=${appLabel} after ${timeoutMs}ms`))
+        setTimeout(poll, 3000)
+      })
+    }
+    poll()
+  })
+}
 
 // ── Helper — emit event to DB ─────────────────────────────────────────────────
 function emitEvent(sessionId, phase, severity, scenario, title, explanation) {
