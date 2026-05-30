@@ -1,0 +1,77 @@
+# =============================================================================
+# Frontend Deployment — Vue 3 + Nginx
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secops-frontend
+  namespace: secops-lab
+  labels:
+    app: secops-frontend
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secops-frontend
+  template:
+    metadata:
+      labels:
+        app: secops-frontend
+    spec:
+      serviceAccountName: minimal-sa
+      automountServiceAccountToken: false
+
+      containers:
+        - name: frontend
+          image: ghcr.io/omar7c3/secops-frontend:latest
+          ports:
+            - containerPort: 80
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: false   # nginx needs root to bind port 80
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+              add: 
+                - "NET_BIND_SERVICE"
+                - "CHOWN"
+                - "SETUID"
+                - "SETGID"
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 30
+
+---
+# Service — LoadBalancer for AKS (public IP), NodePort for k3s (local)
+# setup.ps1 patches this to NodePort when deploying locally
+apiVersion: v1
+kind: Service
+metadata:
+  name: secops-frontend
+  namespace: secops-lab
+  labels:
+    app: secops-frontend
+    app.kubernetes.io/managed-by: argocd
+spec:
+  selector:
+    app: secops-frontend
+  type: LoadBalancer    # patched to NodePort by setup.ps1 for k3s
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080   # used only when type=NodePort (k3s local)

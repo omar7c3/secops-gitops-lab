@@ -1,0 +1,43 @@
+# =============================================================================
+# Kyverno Policy — No HostPath Mounts
+# Scenario 1 — blocks mounting the node filesystem inside a container
+#
+# A hostPath mount with path: / gives the container full read/write
+# access to the node filesystem — including cluster certificates,
+# kubelet credentials, and secrets of all other pods on the node.
+# =============================================================================
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: no-hostpath-mount
+  annotations:
+    policies.kyverno.io/title: No HostPath Mounts
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/description: >
+      Blocks any pod from mounting the host node filesystem via hostPath
+      volumes. Combined with no-privileged-containers this closes the
+      primary container escape path demonstrated in Scenario 1.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: block-hostpath-volumes
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [secops-lab]
+      validate:
+        message: >
+          HostPath volumes are not allowed.
+          Remove the hostPath volume from your pod spec.
+          Policy: no-hostpath-mount
+        deny:
+          conditions:
+            any:
+              - key: "{{ to_array(request.object.spec.template.spec.volumes)[] | [?hostPath] | length(@) }}"
+                operator: GreaterThan
+                value: "0"

@@ -1,0 +1,53 @@
+# =============================================================================
+# Kyverno Policy — Protect NetworkPolicies
+# Scenario 2 — blocks deletion of NetworkPolicy resources
+#
+# Without this policy an attacker with NetworkPolicy admin rights
+# can delete the deny-all NetworkPolicy and open lateral movement
+# across the entire namespace.
+#
+# In Allow Attack mode this policy is deleted by the backend first,
+# then the pod uses its network-tooling-sa token to delete the
+# NetworkPolicy. ArgoCD restores both during reconciliation.
+# =============================================================================
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-networkpolicies
+  annotations:
+    policies.kyverno.io/title: Protect NetworkPolicies
+    policies.kyverno.io/category: Network Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Blocks deletion of NetworkPolicy resources in the secops-lab
+      namespace. This ensures the deny-all default policy cannot be
+      removed even by a service account with NetworkPolicy admin rights.
+      Central to Scenario 2 (NetworkPolicy Bypass).
+spec:
+  validationFailureAction: Enforce
+  background: false   # Must be false — deletion happens at admission
+
+  rules:
+    - name: block-networkpolicy-deletion
+      match:
+        any:
+          - resources:
+              kinds: [NetworkPolicy]
+              namespaces: [secops-lab]
+              operations: [DELETE]
+      # Allow only cluster-admin and ArgoCD service accounts to delete
+      # Everyone else — including network-tooling-sa — is blocked
+      preconditions:
+        all:
+          - key: "{{ request.userInfo.username }}"
+            operator: NotIn
+            value:
+              - system:serviceaccount:argocd:argocd-application-controller
+              - system:masters
+      validate:
+        message: >
+          Deletion of NetworkPolicy resources is not allowed.
+          NetworkPolicies are managed exclusively by GitOps (ArgoCD).
+          Policy: protect-networkpolicies
+        deny: {}

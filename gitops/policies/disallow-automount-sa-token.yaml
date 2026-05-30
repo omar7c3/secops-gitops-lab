@@ -1,0 +1,53 @@
+# =============================================================================
+# Kyverno Policy — Disallow Automount Service Account Token
+# General hardening — enforces least-privilege SA design by default
+#
+# automountServiceAccountToken: true is the default in Kubernetes.
+# This policy flips that default — pods must explicitly opt in to
+# having a token mounted, forcing developers to justify the need.
+#
+# Scenario 1 demonstrates what happens when this is set to true
+# on an over-permissioned service account.
+# =============================================================================
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-automount-sa-token
+  annotations:
+    policies.kyverno.io/title: Disallow Automount Service Account Token
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Requires pods to explicitly set automountServiceAccountToken: false
+      unless they have a documented need for Kubernetes API access.
+      Reduces the blast radius of container compromise by ensuring most
+      pods have no token to steal.
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: disallow-automount
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [secops-lab]
+      # Exclude pods that legitimately need API access
+      # (ArgoCD, backend service, scenario attack pods)
+      exclude:
+        any:
+          - resources:
+              selector:
+                matchLabels:
+                  secops-lab/needs-api-access: "true"
+      validate:
+        message: >
+          automountServiceAccountToken must be explicitly set to false.
+          If this pod needs Kubernetes API access add label:
+          secops-lab/needs-api-access: "true" and document the reason.
+          Policy: disallow-automount-sa-token
+        pattern:
+          spec:
+            automountServiceAccountToken: false

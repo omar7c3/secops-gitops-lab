@@ -1,0 +1,15 @@
+# =============================================================================
+# Scenario 2 — Expected (Safe) State
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: secops-lab
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-networkpolicies

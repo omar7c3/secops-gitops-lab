@@ -1,0 +1,19 @@
+# =============================================================================
+# Service Account — minimal-sa
+# Default service account for all demo workloads
+#
+# No Kubernetes API access. No token mounted.
+# This is the desired state ArgoCD enforces after every scenario.
+# Scenario 1 demonstrates what happens when this is replaced with
+# over-privileged-sa.
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: minimal-sa
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/sa-type: minimal
+automountServiceAccountToken: false

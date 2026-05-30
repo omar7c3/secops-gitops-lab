@@ -1,0 +1,93 @@
+# =============================================================================
+# Postgres Seed Job
+# Creates fake demo tables so Scenario 2 has realistic data to "exfiltrate"
+# Runs once on cluster setup — safe to re-run (idempotent)
+# All data is completely fake — no real PII
+# =============================================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-seed
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/role: seed
+spec:
+  ttlSecondsAfterFinished: 300   # Clean up 5min after completion
+  template:
+    spec:
+      serviceAccountName: minimal-sa
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+
+      containers:
+        - name: seed
+          image: postgres:15-alpine
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              # Wait for postgres to be ready
+              until pg_isready -h postgres -U app -d appdb; do
+                echo "Waiting for postgres..."; sleep 2
+              done
+
+              psql -h postgres -U app -d appdb <<'SQL'
+                -- Users table (fake PII for demo)
+                CREATE TABLE IF NOT EXISTS users (
+                  id    SERIAL PRIMARY KEY,
+                  email VARCHAR(255) NOT NULL,
+                  role  VARCHAR(50)  NOT NULL
+                );
+
+                -- Insert fake users if table is empty
+                INSERT INTO users (email, role)
+                SELECT * FROM (VALUES
+                  ('alice@example.com',   'admin'),
+                  ('bob@example.com',     'user'),
+                  ('charlie@example.com', 'user'),
+                  ('diana@example.com',   'user'),
+                  ('eve@example.com',     'moderator')
+                ) AS v(email, role)
+                WHERE NOT EXISTS (SELECT 1 FROM users LIMIT 1);
+
+                -- Orders table
+                CREATE TABLE IF NOT EXISTS orders (
+                  id         SERIAL PRIMARY KEY,
+                  user_id    INT REFERENCES users(id),
+                  amount     NUMERIC(10,2),
+                  created_at TIMESTAMP DEFAULT NOW()
+                );
+
+                INSERT INTO orders (user_id, amount)
+                SELECT * FROM (VALUES
+                  (1, 1250.00),
+                  (2, 89.99),
+                  (3, 349.50)
+                ) AS v(user_id, amount)
+                WHERE NOT EXISTS (SELECT 1 FROM orders LIMIT 1);
+
+                SELECT 'Seed complete — ' || COUNT(*) || ' users' AS status FROM users;
+              SQL
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop: ["ALL"]

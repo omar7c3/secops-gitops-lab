@@ -1,0 +1,51 @@
+# =============================================================================
+# Kyverno Policy — No Privileged Containers
+# Scenario 1 — blocks the attacker from creating a privileged pod
+# even after stealing the cluster-admin service account token
+#
+# In Allow Attack mode this policy is deleted by the pod itself
+# using the stolen cluster-admin token, allowing the attack to proceed.
+# ArgoCD restores it during reconciliation.
+# =============================================================================
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: no-privileged-containers
+  annotations:
+    policies.kyverno.io/title: No Privileged Containers
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/description: >
+      Blocks any pod from running with privileged: true in its security
+      context. A privileged container has nearly all capabilities of the
+      host node — including the ability to mount the host filesystem and
+      escape the container boundary entirely.
+      This policy is central to Scenario 1 (Privilege Escalation).
+spec:
+  validationFailureAction: Enforce
+  background: true
+
+  rules:
+    - name: block-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [secops-lab]
+      validate:
+        message: >
+          Privileged containers are not allowed.
+          Remove 'securityContext.privileged: true' from your pod spec.
+          Policy: no-privileged-containers
+        pattern:
+          spec:
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            =(ephemeralContainers):
+              - =(securityContext):
+                  =(privileged): "false"

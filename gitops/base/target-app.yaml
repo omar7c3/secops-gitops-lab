@@ -1,0 +1,98 @@
+# =============================================================================
+# Target App — Vulnerable Workload
+# The application scenarios are run against
+#
+# Default state (safe — as enforced by ArgoCD):
+#   serviceAccountName: minimal-sa
+#   automountServiceAccountToken: false
+#
+# Swapped by backend in Allow Attack mode:
+#   Scenario 1 → over-privileged-sa  (cluster-admin token)
+#   Scenario 2 → network-tooling-sa  (NetworkPolicy admin token)
+#
+# The app itself is a simple nginx + shell tools image that gives
+# the attack scripts something realistic to exec into.
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: target-app
+  namespace: secops-lab
+  labels:
+    app: target-app
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/role: attack-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: target-app
+  template:
+    metadata:
+      labels:
+        app: target-app
+        secops-lab/role: attack-target
+    spec:
+      # ── Safe defaults — ArgoCD enforces this state ──────────────────────────
+      serviceAccountName: minimal-sa
+      automountServiceAccountToken: false
+
+      # ── Security context — no root, no privilege escalation ────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: target-app
+          # Debian slim with curl, kubectl, psql available for attack scripts
+          image: bitnami/kubectl:latest
+          command: ["sleep", "infinity"]   # Keeps pod running for exec access
+
+          # ── Environment — DB secret via secretRef (Scenario 2 setup) ───────
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: password
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_USER
+              value: "app"
+            - name: DB_NAME
+              value: "appdb"
+
+          # ── Resource limits — required by Kyverno policy ────────────────────
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+          # ── Security context ────────────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: target-app
+  namespace: secops-lab
+  labels:
+    app: target-app
+    app.kubernetes.io/managed-by: argocd
+spec:
+  selector:
+    app: target-app
+  ports:
+    - port: 80
+      targetPort: 8080

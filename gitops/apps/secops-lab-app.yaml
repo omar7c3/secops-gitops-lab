@@ -1,0 +1,97 @@
+# =============================================================================
+# ArgoCD Application — secops-lab
+#
+# Registers the secops-gitops-lab repo with ArgoCD.
+# ArgoCD watches gitops/base/ and gitops/policies/ and reconciles
+# any drift between the live cluster and Git every 3 minutes.
+#
+# Update repoURL to match your GitHub repo before applying.
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secops-lab
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: argocd
+  # Finalizer ensures ArgoCD cleans up resources when app is deleted
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # ── UPDATE THIS to your GitHub repo URL ──────────────────────────────────
+    repoURL: https://github.com/omar7c3/secops-gitops-lab.git
+    targetRevision: main
+    # Watches multiple paths — both base workloads and policies
+    path: gitops/base
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secops-lab
+
+  syncPolicy:
+    automated:
+      prune: true      # Delete resources removed from Git
+      selfHeal: true   # Re-apply if live state drifts from Git
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2
+
+  # ── Health checks ──────────────────────────────────────────────────────────
+  ignoreDifferences:
+    # Ignore the serviceAccountName field during Allow Attack mode
+    # (backend swaps SA temporarily — ArgoCD should not fight it mid-scenario)
+    - group: apps
+      kind: Deployment
+      name: target-app
+      jsonPointers:
+        - /spec/template/spec/serviceAccountName
+        - /spec/template/spec/automountServiceAccountToken
+
+---
+# ── Second Application for Kyverno Policies ──────────────────────────────────
+# Separate app so policies can be synced independently from workloads
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secops-lab-policies
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/omar7c3/secops-gitops-lab.git
+    targetRevision: main
+    path: gitops/policies
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secops-lab
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2

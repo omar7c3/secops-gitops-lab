@@ -1,0 +1,239 @@
+# =============================================================================
+# NetworkPolicy — Default Deny All + Explicit Allow Rules
+# Scenario 2 — the deny-all is what the attacker tries to delete
+#
+# When deny-all is deleted (Allow Attack mode) all pods in the namespace
+# can reach each other freely — lateral movement is possible.
+# ArgoCD restores this policy during reconciliation (~30 seconds).
+# =============================================================================
+
+# ── Default deny — all ingress and egress blocked ─────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/policy-type: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ── Allow DNS (required for all pods) ────────────────────────────────────────
+# Without this no pod can resolve any hostname — kubectl, postgres, argocd etc
+# all use DNS. deny-all blocks UDP/TCP 53 to kube-dns so this must be explicit.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# ── Allow frontend ingress on port 80 ────────────────────────────────────────
+# Visitors reach the demo UI via the LoadBalancer on port 80.
+# deny-all blocks all ingress so this explicitly opens port 80 on the
+# frontend pod to accept browser traffic from anywhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-port-80
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+          protocol: TCP
+
+---
+# ── Allow frontend → backend egress (port 3000) ───────────────────────────────
+# nginx inside the frontend pod proxies /api/* to the backend service.
+# deny-all blocks all egress so this explicitly allows the frontend pod
+# to initiate connections to the backend pod on port 3000.
+# NetworkPolicy is stateful — return traffic is automatically allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-backend
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-frontend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: secops-backend
+      ports:
+        - port: 3000
+
+---
+# ── Allow backend ingress on port 3000 ───────────────────────────────────────
+# The backend pod must accept incoming connections on port 3000 from:
+#   - frontend pod (API proxy)
+#   - Falco Sidekick webhook (cross-namespace — handled separately)
+# deny-all blocks all ingress so this opens port 3000 on the backend pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-ingress-port-3000
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 3000
+          protocol: TCP
+
+---
+# ── Allow target-app → postgres ingress (port 5432) ──────────────────────────
+# Scenario 2 attack script execs into target-app and connects to postgres
+# using the stolen DB_PASSWORD env var. This allows that connection.
+# deny-all blocks postgres ingress so this explicitly permits only
+# target-app pods to reach postgres — no other pod can connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-target-to-postgres
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: target-app
+      ports:
+        - port: 5432
+
+---
+# ── Allow backend → ArgoCD egress (port 80/443) ───────────────────────────────
+# The backend polls ArgoCD API every 2s to get drift/sync state for the
+# System State panel in the demo UI. ArgoCD runs in the argocd namespace.
+# deny-all blocks all cross-namespace egress so this explicitly allows
+# the backend pod to reach argocd-server on port 80 (HTTP) and 443 (HTTPS).
+# NetworkPolicy is stateful — ArgoCD response traffic is automatically allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress-to-argocd
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-backend
+  policyTypes:
+    - Egress
+  egress:
+  - to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: argocd
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: argocd-server
+    ports:
+      - port: 8080
+      - port: 443
+
+---
+# ── Allow backend → Kubernetes API egress (port 6443) ────────────────────────
+# The backend uses @kubernetes/client-node to manage cluster resources:
+#   - swap service accounts on target-app (Allow Attack setup)
+#   - delete/restore Kyverno policies
+#   - suspend/resume ArgoCD sync
+#   - check cluster drift state (watchdog)
+# deny-all blocks all egress so this explicitly allows the backend pod
+# to reach the Kubernetes API server. kube-dns resolves
+# kubernetes.default.svc.cluster.local to the API server ClusterIP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress-to-k8s-api
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-backend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 443
+        - port: 6443
+
+---
+# ── Allow Falco Sidekick → backend ingress (port 3000) ────────────────────────
+# Falco runs in the falco namespace and fires alerts via Falco Sidekick
+# which calls the backend webhook at POST /events/falco.
+# This allows ingress on port 3000 specifically from the falco namespace.
+# Without this Falco alerts never reach the backend event feed and the
+# Attack Feed panel in the demo UI shows no runtime detection events.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-falco-ingress-to-backend
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app: secops-backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: falco
+      ports:
+        - port: 3000
+          protocol: TCP

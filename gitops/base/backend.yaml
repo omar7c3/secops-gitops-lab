@@ -1,0 +1,206 @@
+# =============================================================================
+# Backend Deployment — Token + Event service + Watchdog
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secops-backend
+  namespace: secops-lab
+  labels:
+    app: secops-backend
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secops-backend
+  template:
+    metadata:
+      labels:
+        app: secops-backend
+        secops-lab/needs-api-access: "true"
+    spec:
+      serviceAccountName: backend-sa
+      automountServiceAccountToken: true
+
+      containers:
+        - name: backend
+          image: ghcr.io/omar7c3/secops-backend:latest
+          ports:
+            - containerPort: 3000
+
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NAMESPACE
+              value: "secops-lab"
+            - name: NODE_ENV
+              value: "production"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: jwt-secret
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: admin-password
+            - name: ARGOCD_SERVER
+              value: "argocd-server.argocd.svc.cluster.local"
+            - name: ARGOCD_PORT
+              value: "80"
+            - name: DB_PATH
+              value: "/data/secops-lab.db"
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config.yaml
+              subPath: config.yaml
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backend-data-pvc
+        - name: config
+          configMap:
+            name: secops-lab-config
+
+---
+# PVC for SQLite database
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data-pvc
+  namespace: secops-lab
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: secops-backend
+  namespace: secops-lab
+  labels:
+    app: secops-backend
+    app.kubernetes.io/managed-by: argocd
+spec:
+  selector:
+    app: secops-backend
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+---
+# Service Account for backend — needs to manage cluster resources
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/sa-type: backend
+automountServiceAccountToken: true
+
+---
+# ClusterRole — backend needs to manage ArgoCD apps + Kyverno policies + deployments
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: secops-backend-role
+  labels:
+    app.kubernetes.io/managed-by: argocd
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get","list","patch","update"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get","list","patch","update"]
+  - apiGroups: ["kyverno.io"]
+    resources: ["clusterpolicies"]
+    verbs: ["get","list","delete","create","apply"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secops-backend-binding
+  labels:
+    app.kubernetes.io/managed-by: argocd
+subjects:
+  - kind: ServiceAccount
+    name: backend-sa
+    namespace: secops-lab
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: secops-backend-role
+
+---
+# ConfigMap — mounts config.yaml into backend pod
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secops-lab-config
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+data:
+  config.yaml: |
+    # Mounted from ConfigMap — edit here or regenerate from repo root config.yaml
+    session:
+      duration_minutes: 30
+      grace_period_minutes: 5
+      max_concurrent: 1
+    token:
+      default_expiry_days: 7
+      format: 'DEMO-XXXX-XXXX'
+    scenario:
+      reconcile_timeout_seconds: 120
+      proof_delay_seconds: 5
+    cluster:
+      target: 'aks'
+      namespace: 'secops-lab'
+    watchdog:
+      enabled: true
+      interval_seconds: 60
+      reset_conditions:
+        cluster_dirty: true
+        session_state:
+          - no_active_session
+          - session_expired
+          - session_ended_by_user
+          - admin_force_released
+      never_reset_if:
+        - session_active
+    messages:
+      session_in_use: 'This demo is currently in use. Please try again later or contact the owner for a new token.'
+      session_expired: 'Your session has expired. Contact the owner to request a new session.'
+      token_invalid: 'This token is not valid or has expired.'
+      cluster_compromised: 'CLUSTER COMPROMISED. Attacker has cluster-admin access. ArgoCD sync is suspended. No automatic recovery will occur. Click Restore Protection when ready to recover.'
+

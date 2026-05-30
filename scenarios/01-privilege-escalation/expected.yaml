@@ -1,0 +1,34 @@
+# =============================================================================
+# Scenario 1 — Expected (Safe) State
+# This is what ArgoCD enforces after reconciliation
+# Used by backend to verify cluster is back to desired state
+# =============================================================================
+
+# target-app must use minimal-sa with no token mounted
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: target-app
+  namespace: secops-lab
+spec:
+  template:
+    spec:
+      serviceAccountName: minimal-sa
+      automountServiceAccountToken: false
+
+---
+# Both Kyverno policies must exist
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: no-privileged-containers
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: no-hostpath-mount
+
+---
+# privileged-attack-pod must NOT exist
+# (ArgoCD prunes it — not in Git)

@@ -35,3 +35,6 @@ Thumbs.db
 *.key
 kubeconfig
 config.local.yaml
+
+# Never commit secrets
+**/backend-secrets*

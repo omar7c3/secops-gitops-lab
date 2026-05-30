@@ -1,0 +1,23 @@
+{
+  "name": "secops-backend",
+  "version": "1.0.0",
+  "description": "SecOps GitOps Lab — Token + Event Backend",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+    "dependencies": {
+    "express": "^4.21.2",
+    "better-sqlite3": "^11.8.0",
+    "jsonwebtoken": "^9.0.3",
+    "js-yaml": "^4.1.0",
+    "uuid": "^11.1.0",
+    "cors": "^2.8.5",
+    "helmet": "^8.0.0",
+    "@kubernetes/client-node": "^1.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}

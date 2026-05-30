@@ -1,0 +1,105 @@
+# =============================================================================
+# SecOps GitOps Lab — Configuration
+# All tuneable parameters in one place.
+# No code changes needed for common adjustments.
+# Set by setup.ps1 — edit manually if needed after setup.
+# =============================================================================
+
+# ── Session ──────────────────────────────────────────────────────────────────
+session:
+  duration_minutes: 30        # How long a visitor session lasts
+  grace_period_minutes: 5     # Hold session after browser closes before releasing
+  max_concurrent: 1           # One active session per token at a time
+
+# ── Token ────────────────────────────────────────────────────────────────────
+token:
+  default_expiry_days: 7      # Default token validity if not set at generation
+  format: 'DEMO-XXXX-XXXX'   # Token format pattern (X = alphanumeric)
+
+# ── Scenario ─────────────────────────────────────────────────────────────────
+scenario:
+  reconcile_timeout_seconds: 120   # Max wait for ArgoCD to reconcile
+  proof_delay_seconds: 5           # Pause before running proof.sh
+
+# ── Cluster ──────────────────────────────────────────────────────────────────
+cluster:
+  target: 'k3s'               # 'aks' or 'k3s' — updated by setup.ps1
+  namespace: 'secops-lab'     # Namespace all workloads run in
+
+# ── Auto Stop/Start (AKS only — ignored for k3s) ─────────────────────────────
+auto_stop:
+  enabled: true
+  timezone: 'America/New_York'   # IANA timezone — handles DST automatically
+  schedule:
+    - days: [Mon, Tue, Wed, Thu, Fri]
+      start: '08:00'             # Start cluster at 8am
+      stop:  '19:00'             # Stop cluster at 7pm
+    - days: [Sat, Sun]
+      start: null                # Never auto-start on weekends
+      stop:  null                # Leave in whatever state it is in
+  # Manual override always works regardless of schedule:
+  #   az aks start --resource-group <rg> --name <cluster>
+  #   az aks stop  --resource-group <rg> --name <cluster>
+
+# ── Local k3s (k3s path only — ignored for AKS) ──────────────────────────────
+local:
+  wsl2_distro: 'Ubuntu'          # WSL2 distro to use
+  min_kernel_version: '5.8'      # Required for Falco eBPF probe
+  docker_context: 'default'      # Docker Desktop context
+  kubeconfig_path: '~/.kube/config'
+
+# ── Watchdog ─────────────────────────────────────────────────────────────────
+watchdog:
+  enabled: true
+  interval_seconds: 60           # How often watchdog checks cluster state
+
+  # Watchdog resets ONLY when ALL of these are true:
+  #   1. cluster state differs from Git (dirty)
+  #   2. ONE of the session conditions below is met
+  reset_conditions:
+    cluster_dirty: true
+    session_state:
+      - no_active_session
+      - session_expired
+      - session_ended_by_user
+      - admin_force_released
+
+  # Watchdog NEVER resets if any of these are true:
+  never_reset_if:
+    - session_active             # Even if idle — user may continue
+
+# ── User-facing Messages ──────────────────────────────────────────────────────
+messages:
+  session_in_use: >
+    This demo is currently in use.
+    Please try again later or contact the owner for a new token.
+
+  session_expired: >
+    Your session has expired.
+    Contact the owner to request a new session.
+
+  token_invalid: >
+    This token is not valid or has expired.
+
+  cluster_compromised: >
+    CLUSTER COMPROMISED. Attacker has cluster-admin access.
+    ArgoCD sync is suspended. No automatic recovery will occur.
+    Click Restore Protection when ready to recover.
+
+# Admin portal (http://localhost:30080/admin)
+admin:
+  session_hours: 1    # how long admin JWT lasts
+
+
+
+
+
+
+
+
+
+
+
+
+
+

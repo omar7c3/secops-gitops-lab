@@ -1,0 +1,28 @@
+# =============================================================================
+# Service Account — over-privileged-sa
+# Used in Scenario 1 Allow Attack mode ONLY
+#
+# This SA is intentionally misconfigured to demonstrate the blast radius
+# of an over-permissioned service account:
+#   - automountServiceAccountToken: true  (token accessible inside pod)
+#   - Bound to ClusterRole: cluster-admin (full cluster access)
+#
+# Real world equivalent: a legacy app migrated to Kubernetes that was
+# given admin rights "temporarily" and never had them revoked.
+#
+# ArgoCD restores minimal-sa after scenario reconciliation.
+# This SA is in Git so ArgoCD tracks it — the ClusterRoleBinding
+# is what the pod creates dynamically and ArgoCD removes.
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: over-privileged-sa
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/sa-type: over-privileged
+    secops-lab/needs-api-access: "true"   # Exempts from automount policy
+# Token IS mounted — this is the misconfiguration being demonstrated
+automountServiceAccountToken: true

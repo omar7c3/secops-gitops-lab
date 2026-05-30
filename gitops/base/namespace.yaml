@@ -1,0 +1,12 @@
+# =============================================================================
+# SecOps GitOps Lab — Namespace
+# All demo workloads run in this namespace
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/environment: demo

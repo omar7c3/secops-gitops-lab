@@ -1,0 +1,60 @@
+# =============================================================================
+# Service Account — network-tooling-sa
+# Used in Scenario 2 Allow Attack mode ONLY
+#
+# This SA is intentionally misconfigured to demonstrate that narrow
+# but wrong RBAC permissions are still dangerous:
+#   - automountServiceAccountToken: true  (token accessible inside pod)
+#   - Bound to Role: network-policy-admin (can delete NetworkPolicies)
+#
+# Real world equivalent: a network monitoring or CNI helper pod that
+# was given NetworkPolicy management rights instead of read-only access.
+#
+# Key contrast with over-privileged-sa:
+#   - Cannot suspend ArgoCD (no rights to argocd namespace)
+#   - Cannot delete Kyverno policies (backend does this for Allow Attack)
+#   - Attack window is bounded by ArgoCD reconciliation (~30 seconds)
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: network-tooling-sa
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    secops-lab/sa-type: network-tooling
+    secops-lab/needs-api-access: "true"   # Exempts from automount policy
+automountServiceAccountToken: true
+
+---
+# Role — NetworkPolicy admin rights (the over-permission)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: network-policy-admin
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# RoleBinding — binds network-tooling-sa to the over-permissioned role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: network-tooling-sa-binding
+  namespace: secops-lab
+  labels:
+    app.kubernetes.io/managed-by: argocd
+subjects:
+  - kind: ServiceAccount
+    name: network-tooling-sa
+    namespace: secops-lab
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: network-policy-admin
