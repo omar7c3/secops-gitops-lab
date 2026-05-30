@@ -496,6 +496,59 @@ function Install-PlatformComponents {
     Write-Success "ArgoCD admin password: $argoPass"
     Write-Info "Save this — it will not be shown again"
 
+    # ── ArgoCD API Token (permanent) ─────────────────────────────────────────
+    Write-Header "Configuring ArgoCD API Access"
+
+    # Step 1 — add secops-backend account
+    Write-Step "Adding secops-backend account to ArgoCD..."
+    $cmPatch = [System.IO.Path]::GetTempFileName() + ".json"
+    '{"data":{"accounts.secops-backend":"apiKey"}}' | Set-Content $cmPatch -Encoding ascii
+    kubectl patch configmap argocd-cm -n argocd --type=merge --patch-file $cmPatch
+    Remove-Item $cmPatch
+
+    # Step 2 — set read-only permissions
+    Write-Step "Setting read-only permissions for secops-backend..."
+    $rbacPatch = [System.IO.Path]::GetTempFileName() + ".json"
+    '{"data":{"policy.csv":"p, secops-backend, applications, get, */*, allow\n"}}' | Set-Content $rbacPatch -Encoding ascii
+    kubectl patch configmap argocd-rbac-cm -n argocd --type=merge --patch-file $rbacPatch
+    Remove-Item $rbacPatch
+
+    # Step 3 — wait for ArgoCD to pick up config
+    Write-Step "Waiting for ArgoCD to reload config..."
+    Start-Sleep -Seconds 10
+
+    # Step 4 — get admin session token
+    Write-Step "Getting ArgoCD admin session token..."
+    $adminToken = (Invoke-RestMethod `
+        -Uri "http://localhost:8080/api/v1/session" `
+        -Method POST `
+        -ContentType "application/json" `
+        -Body "{`"username`":`"admin`",`"password`":`"$argoPass`"}").token
+
+    # Step 5 — generate permanent token for secops-backend
+    Write-Step "Generating permanent API token for secops-backend..."
+    $apiToken = (Invoke-RestMethod `
+        -Uri "http://localhost:8080/api/v1/account/secops-backend/token" `
+        -Method POST `
+        -Headers @{Authorization="Bearer $adminToken"} `
+        -ContentType "application/json" `
+        -Body "{}").token
+
+    # Step 6 — store as Kubernetes secret
+    Write-Step "Storing ArgoCD API token as Kubernetes secret..."
+    kubectl create secret generic argocd-api-token `
+        --from-literal=token=$apiToken `
+        -n $NAMESPACE `
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # Step 7 — inject into backend deployment
+    Write-Step "Injecting ArgoCD token into backend deployment..."
+    kubectl set env deployment/secops-backend `
+        -n $NAMESPACE `
+        ARGOCD_TOKEN=$apiToken
+
+    Write-Success "ArgoCD API token configured — permanent, no expiry"
+
     # ── Kyverno ───────────────────────────────────────────────────────────────
     Write-Header "Installing Kyverno"
     Write-Step "Adding Helm repo..."
