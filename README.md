@@ -23,7 +23,7 @@ Each scenario has two modes: **With Controls** (defences active) and **Allow Att
 misconfiguration to show full blast radius). A proof phase runs after every attack to confirm
 the controls are restored.
 
-### Scenario 1 — Privilege Escalation via Service Account Abuse
+### Scenario 1 — Privilege Escalation
 
 A pod with an over-permissioned `cluster-admin` service account reads its mounted token and
 uses it to delete Kyverno admission policies, suspend ArgoCD sync, create a privileged pod

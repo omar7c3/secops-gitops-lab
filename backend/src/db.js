@@ -90,7 +90,7 @@ function initDb() {
       attack_started_at   INTEGER,
       compromised_at      INTEGER,   -- when WAITING state began (dwell time start)
       restored_at         INTEGER,   -- when visitor clicked Restore Protection
-      dwell_time_seconds  INTEGER,   -- compromised_at to restored_at
+      dwell_time_seconds  INTEGER,   -- compromised_at to verified reconciliation (frozen when cluster clean)
       window_started_at   INTEGER,   -- Scenario 2 lateral movement window start
       window_ended_at     INTEGER    -- Scenario 2 window end (ArgoCD reconciled)
     )

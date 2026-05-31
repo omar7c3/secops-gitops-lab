@@ -158,34 +158,45 @@ router.post('/restore', async (req, res) => {
     return res.status(409).json({ error: 'not in waiting state' })
   }
 
-  // Calculate dwell time
-  const dwellSeconds = state.compromised_at ? now - state.compromised_at : 0
-
+  // Enter reconciling. Dwell time is NOT frozen here — it keeps counting until
+  // the cluster is verified back to desired state (see waitForReconcile below).
+  // restored_at records the button-click moment for reference only.
   db.prepare(`
     UPDATE scenario_state SET
       status = 'reconciling',
-      restored_at = ?,
-      dwell_time_seconds = ?
+      restored_at = ?
     WHERE id = 1
-  `).run(now, dwellSeconds)
+  `).run(now)
 
   emitEvent(req.user.sessionId, 'RESTORE', 'INFO', state.scenario,
     'Visitor triggered manual protection restore',
-    `Backend resumes ArgoCD sync. Recording total dwell time — ${Math.floor(dwellSeconds / 60)}m ${dwellSeconds % 60}s.`)
+    'SOC response started. Backend removes attacker-created resources and resumes ArgoCD sync. Dwell time keeps counting until the cluster is verified back to desired state.')
 
-  // Resume ArgoCD sync
+  // SOC response — delete the attacker-created privileged pod.
+  // ArgoCD will not prune it (created out-of-band via the API, no Git tracking
+  // label), so the incident responder deletes it directly as containment.
+  const namespace = global.CONFIG.cluster.namespace
+  exec(`kubectl delete pod privileged-attack-pod -n ${namespace} --ignore-not-found`, () => {})
+  emitEvent(req.user.sessionId, 'RESTORE', 'INFO', state.scenario,
+    'SOC response — deleting attacker-created privileged pod',
+    'Incident response removes privileged-attack-pod (privileged: true, node root filesystem mounted at /host). ArgoCD cannot prune it because the attacker created it directly, not through Git — so the SOC deletes it as part of containment.')
+
+  // Resume ArgoCD sync, then trigger a hard sync. Resume alone only re-enables
+  // self-heal on ArgoCD's next ~3min resync cycle; the explicit sync reverts the
+  // drift (policies, SA swap) now so recovery is prompt.
   await k8s.resumeArgoCDSync('secops-lab')
   await k8s.resumeArgoCDSync('secops-lab-policies')
+  await k8s.syncArgoCD('secops-lab').catch(() => {})
+  await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
 
   emitEvent(req.user.sessionId, 'RESTORE', 'INFO', state.scenario,
     'ArgoCD sync resumed',
-    'GitOps is active again. ArgoCD will now detect and reconcile all drift introduced during the attack.')
+    'GitOps is active again. ArgoCD will now detect and reconcile all drift introduced during the attack — restoring Kyverno policies and swapping the service account back to minimal-sa.')
 
-  emitEvent(req.user.sessionId, 'RESTORE', 'WARNING', state.scenario,
-    `Dwell time: ${Math.floor(dwellSeconds / 60)}m ${dwellSeconds % 60}s`,
-    `Cluster was fully compromised for this duration. In a real incident this window represents maximum attacker access time — certificate theft, data exfiltration, and backdoor installation could all occur in this window.`)
+  // Freeze dwell time only once the cluster is actually reconciled.
+  waitForReconcile(req.user.sessionId, state.scenario, state.compromised_at)
 
-  return res.json({ restored: true, dwellSeconds })
+  return res.json({ restored: true })
 })
 
 // ── POST /scenario/proof ──────────────────────────────────────────────────────
@@ -249,8 +260,9 @@ router.get('/state', (req, res) => {
   const state = getDb().prepare('SELECT * FROM scenario_state WHERE id = 1').get()
   const now   = Math.floor(Date.now() / 1000)
 
-  // Add live dwell time if currently compromised
-  if (state.status === 'waiting' && state.compromised_at) {
+  // Live dwell time while compromised AND through reconciliation — until the
+  // cluster is verified clean and dwell_time_seconds is frozen.
+  if (state.compromised_at && state.dwell_time_seconds == null) {
     state.current_dwell_seconds = now - state.compromised_at
   }
 
@@ -316,6 +328,48 @@ function waitForRunningPod(namespace, appLabel, timeoutMs = 60000) {
       })
     })
   })
+}
+
+// ── Helper — poll until ArgoCD reconciles, then freeze dwell time ─────────────
+// Dwell time represents the true attacker-access window: from compromise until
+// the cluster is verified back to desired state — NOT the button-click moment.
+function waitForReconcile(sessionId, scenario, compromisedAt, attempt = 0) {
+  const MAX_ATTEMPTS = 30   // ~90s at a 3s interval
+  const INTERVAL_MS  = 3000
+
+  setTimeout(async () => {
+    const db    = getDb()
+    const state = db.prepare('SELECT status, dwell_time_seconds FROM scenario_state WHERE id = 1').get()
+
+    // Aborted (reset), already finalized, or no longer in a recovery state — stop
+    if (!state || state.dwell_time_seconds != null ||
+        !['reconciling', 'proof', 'complete'].includes(state.status)) {
+      return
+    }
+
+    const reconciled = await k8s.isS1Reconciled().catch(() => false)
+    const now        = Math.floor(Date.now() / 1000)
+
+    if (reconciled) {
+      const dwell = compromisedAt ? now - compromisedAt : 0
+      db.prepare(`UPDATE scenario_state SET dwell_time_seconds = ? WHERE id = 1`).run(dwell)
+      emitEvent(sessionId, 'RECONCILE', 'SUCCESS', scenario,
+        `Cluster reconciled to desired state — dwell time ${Math.floor(dwell / 60)}m ${dwell % 60}s`,
+        'ArgoCD has restored all drift: Kyverno admission policies re-created and the service account swapped back to minimal-sa. The attacker-created pod was removed by the SOC. Dwell time stops here — this is the true attacker-access window.')
+      return
+    }
+
+    if (attempt >= MAX_ATTEMPTS) {
+      const dwell = compromisedAt ? now - compromisedAt : 0
+      db.prepare(`UPDATE scenario_state SET dwell_time_seconds = ? WHERE id = 1`).run(dwell)
+      emitEvent(sessionId, 'RECONCILE', 'WARNING', scenario,
+        `Reconciliation not confirmed — dwell time capped at ${Math.floor(dwell / 60)}m ${dwell % 60}s`,
+        'Desired state was not reached within the timeout (a Kyverno policy, the target-app service account, or the attacker pod did not return to baseline). Dwell time has been frozen at the cap — check ArgoCD application health.')
+      return
+    }
+
+    waitForReconcile(sessionId, scenario, compromisedAt, attempt + 1)
+  }, INTERVAL_MS)
 }
 
 // ── Helper — emit event to DB ─────────────────────────────────────────────────

@@ -137,7 +137,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get","list"]
+    verbs: ["get","list","delete"]   # delete: SOC removal of attacker-created privileged-attack-pod on restore
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]

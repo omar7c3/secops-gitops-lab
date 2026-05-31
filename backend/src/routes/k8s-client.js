@@ -173,6 +173,30 @@ async function isArgoCDSuspended(appName) {
   }
 }
 
+// ── Verify Scenario 1 is actually reconciled to desired state ─────────────────
+// ArgoCD's app sync.status lags (it reads stale 'Synced' right after resume),
+// so dwell time must be gated on CONCRETE facts, not the sync field:
+//   • both deleted Kyverno admission policies are back
+//   • target-app is on minimal-sa again (SA swap reverted)
+//   • the attacker's privileged pod is gone
+function isS1Reconciled() {
+  const { exec } = require('child_process')
+  const script = [
+    `POL=$(kubectl get clusterpolicy no-privileged-containers no-hostpath-mount -o name 2>/dev/null | wc -l)`,
+    `SA=$(kubectl get deployment target-app -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)`,
+    `POD=$(kubectl get pod privileged-attack-pod -n ${NAMESPACE} --ignore-not-found -o name 2>/dev/null)`,
+    `echo "$POL|$SA|$POD"`
+  ].join('; ')
+
+  return new Promise((resolve) => {
+    exec(`sh -c "${script}"`, (err, stdout) => {
+      if (err) return resolve(false)
+      const [pol, sa, pod] = (stdout || '').trim().split('|')
+      resolve(pol === '2' && sa === 'minimal-sa' && (!pod || pod.length === 0))
+    })
+  })
+}
+
 module.exports = {
   swapServiceAccount,
   deleteKyvernoPolicy,
@@ -180,5 +204,6 @@ module.exports = {
   resumeArgoCDSync,
   syncArgoCD,
   isClusterDirty,
-  isArgoCDSuspended
+  isArgoCDSuspended,
+  isS1Reconciled
 }

@@ -136,37 +136,52 @@
         </div>
         <div class="flex-1 overflow-y-auto p-3 space-y-2">
 
-          <!-- Compromised cluster warning (Scenario 1 Allow Attack) -->
-          <div v-if="scenario.isCompromised"
-               class="border border-red-700 bg-red-950 rounded-xl p-4">
+          <!-- Compromised / reconciling panel (Scenario 1 Allow Attack) -->
+          <div v-if="scenario.isCompromised || scenario.isReconciling"
+               class="border rounded-xl p-4"
+               :class="scenario.isCompromised ? 'border-red-700 bg-red-950' : 'border-yellow-700 bg-yellow-950/40'">
             <div class="flex items-center gap-2 mb-3">
-              <span class="text-red-400 text-lg">⚠</span>
-              <span class="font-bold text-red-300 uppercase tracking-wide text-sm">
-                Cluster Compromised
+              <span class="text-lg" :class="scenario.isCompromised ? 'text-red-400' : 'text-yellow-400'">
+                {{ scenario.isCompromised ? '⚠' : '↺' }}
+              </span>
+              <span class="font-bold uppercase tracking-wide text-sm"
+                    :class="scenario.isCompromised ? 'text-red-300' : 'text-yellow-300'">
+                {{ scenario.isCompromised ? 'Cluster Compromised' : 'SOC Response — Reconciling' }}
               </span>
             </div>
-            <div class="text-red-200 text-2xl font-mono font-bold mb-3">
+            <div class="text-2xl font-mono font-bold mb-3"
+                 :class="scenario.isCompromised ? 'text-red-200' : 'text-yellow-200'">
               {{ formatDwell(scenario.dwellSeconds) }}
             </div>
-            <p class="text-red-300 text-xs mb-3">
-              Attacker has cluster-admin access. ArgoCD sync is suspended.
-              No automatic recovery will occur.
+
+            <!-- Compromised: response checklist + restore action -->
+            <template v-if="scenario.isCompromised">
+              <p class="text-red-300 text-xs mb-3">
+                Attacker has cluster-admin access. ArgoCD sync is suspended.
+                No automatic recovery will occur.
+              </p>
+              <div class="text-xs text-red-400 space-y-1 mb-4">
+                <div>In a real incident you would need to:</div>
+                <div class="ml-2">1. Revoke the compromised token</div>
+                <div class="ml-2">2. Rotate cluster certificates</div>
+                <div class="ml-2">3. Audit what was accessed</div>
+                <div class="ml-2">4. Restore GitOps sync manually</div>
+              </div>
+              <button
+                @click="handleRestore"
+                :disabled="restoring"
+                class="w-full bg-red-600 hover:bg-red-500 disabled:bg-gray-700
+                       text-white font-bold py-2.5 rounded-lg text-sm transition-colors"
+              >
+                {{ restoring ? 'Restoring...' : 'Restore Protection' }}
+              </button>
+            </template>
+
+            <!-- Reconciling: dwell keeps counting until cluster verified clean -->
+            <p v-else class="text-yellow-300 text-xs">
+              SOC response in progress — attacker pod deleted, ArgoCD reconciling.
+              Dwell time stops when the cluster is verified back to desired state.
             </p>
-            <div class="text-xs text-red-400 space-y-1 mb-4">
-              <div>In a real incident you would need to:</div>
-              <div class="ml-2">1. Revoke the compromised token</div>
-              <div class="ml-2">2. Rotate cluster certificates</div>
-              <div class="ml-2">3. Audit what was accessed</div>
-              <div class="ml-2">4. Restore GitOps sync manually</div>
-            </div>
-            <button
-              @click="handleRestore"
-              :disabled="restoring"
-              class="w-full bg-red-600 hover:bg-red-500 disabled:bg-gray-700
-                     text-white font-bold py-2.5 rounded-lg text-sm transition-colors"
-            >
-              {{ restoring ? 'Restoring...' : 'Restore Protection' }}
-            </button>
           </div>
 
           <!-- Security posture control cards -->

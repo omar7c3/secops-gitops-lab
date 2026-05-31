@@ -1,4 +1,4 @@
-# Scenario 1 — Privilege Escalation via Service Account Abuse
+# Scenario 1 — Privilege Escalation
 
 ## What This Demonstrates
 

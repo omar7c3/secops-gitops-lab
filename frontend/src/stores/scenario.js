@@ -26,6 +26,9 @@ export const useScenarioStore = defineStore('scenario', () => {
   const isAttacking = computed(() =>
     scenarioState.value.status === 'attacking')
 
+  const isReconciling = computed(() =>
+    scenarioState.value.status === 'reconciling')
+
   const isIdle = computed(() =>
     scenarioState.value.status === 'idle')
 
@@ -152,20 +155,19 @@ export const useScenarioStore = defineStore('scenario', () => {
       const res = await axios.get('/api/scenario/state')
       scenarioState.value = res.data
 
-      // Start dwell timer if compromised
-      if (res.data.status === 'waiting' && !dwellTimer) {
-        dwellTimer = setInterval(() => {
-          dwellSeconds.value = res.data.current_dwell_seconds
-            ? res.data.current_dwell_seconds + 1
-            : dwellSeconds.value + 1
-        }, 1000)
+      // Live dwell while compromised AND through reconciliation — re-sync from
+      // the server each poll and tick locally between polls.
+      if (res.data.current_dwell_seconds != null) {
+        dwellSeconds.value = res.data.current_dwell_seconds
+        if (!dwellTimer) {
+          dwellTimer = setInterval(() => { dwellSeconds.value += 1 }, 1000)
+        }
       }
 
-      // Stop dwell timer if no longer waiting
-      if (res.data.status !== 'waiting' && dwellTimer) {
-        clearInterval(dwellTimer)
-        dwellTimer = null
-        dwellSeconds.value = res.data.dwell_time_seconds || dwellSeconds.value
+      // Reconciliation complete — freeze dwell at the verified value
+      if (res.data.dwell_time_seconds != null) {
+        if (dwellTimer) { clearInterval(dwellTimer); dwellTimer = null }
+        dwellSeconds.value = res.data.dwell_time_seconds
       }
 
       // Track lateral movement window (Scenario 2)
@@ -190,10 +192,9 @@ export const useScenarioStore = defineStore('scenario', () => {
   }
 
   async function restoreProtection() {
-    const res = await axios.post('/api/scenario/restore')
-    dwellSeconds.value = res.data.dwellSeconds
-    if (dwellTimer) { clearInterval(dwellTimer); dwellTimer = null }
-    return res.data
+    // Dwell keeps counting until the backend confirms reconciliation; do not
+    // freeze it here. The dwell timer is managed by fetchState polling.
+    return (await axios.post('/api/scenario/restore')).data
   }
 
   async function runProof() {
@@ -211,7 +212,7 @@ export const useScenarioStore = defineStore('scenario', () => {
 
   return {
     events, scenarioState, argocdState, dwellSeconds, windowSeconds,
-    isCompromised, isAttacking, isIdle, isComplete, timelineEvents, securityPosture,
+    isCompromised, isAttacking, isReconciling, isIdle, isComplete, timelineEvents, securityPosture,
     startPolling, stopPolling,
     runScenario, restoreProtection, runProof, resetScenario
   }
