@@ -97,11 +97,17 @@ router.post('/run', async (req, res) => {
       // cannot restore protect-networkpolicies via self-heal (it re-creates in <3s).
       // secops-lab app stays active — it will auto-reconcile deny-all (~30s).
       if (scenario === 'network-policy-bypass' && mode === 'uncontrolled') {
+        // Pause BOTH ArgoCD apps so the attack's deletions stick long enough to
+        // observe: secops-lab-policies (protect-networkpolicies) and secops-lab
+        // (deny-all + the egress allows). secops-lab self-heals in ~2s, which is
+        // faster than the probe — leaving it active makes the window unobservable.
+        // GitOps is resumed after the attack to auto-revert everything.
         await k8s.suspendArgoCDSync('secops-lab-policies').catch(() => {})
+        await k8s.suspendArgoCDSync('secops-lab').catch(() => {})
         await k8s.deleteKyvernoPolicy('protect-networkpolicies').catch(() => {})
         emitEvent(req.user.sessionId, 'SETUP', 'WARNING', scenario,
-          'Backend deleting Kyverno policy: protect-networkpolicies',
-          'Backend suspends the policies ArgoCD app and removes protect-networkpolicies. The pod can now delete the deny-all NetworkPolicy — but cannot suspend ArgoCD secops-lab, so that app will auto-reconcile the deletion.')
+          'Backend pausing GitOps + removing protect-networkpolicies',
+          'Backend pauses ArgoCD reconciliation and removes protect-networkpolicies so the attack can strip the namespace isolation and reach the database. When the attack finishes, GitOps is resumed and auto-reverts every change — closing the window.')
       }
 
       const copyCmd = `kubectl cp ${scriptPath} ${namespace}/${pod}:/tmp/attack.sh`
@@ -123,10 +129,13 @@ router.post('/run', async (req, res) => {
           const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
           if (st && st.status === 'attacking') {
             if (mode === 'uncontrolled' && scenario === 'network-policy-bypass') {
-              // Restore the admission guard promptly (resume + hard-sync) so proof
-              // can show the re-attack blocked, then poll for deny-all to be
-              // reconciled back — stamping window_ended at the real close moment.
+              // Resume + hard-sync BOTH apps. secops-lab restores deny-all + the
+              // egress allows (re-isolating target-app → postgres sealed → window
+              // closes); secops-lab-policies restores protect-networkpolicies (so
+              // proof shows the delete blocked). Then poll for deny-all's return.
+              k8s.resumeArgoCDSync('secops-lab').catch(() => {})
               k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
+              k8s.syncArgoCD('secops-lab').catch(() => {})
               k8s.syncArgoCD('secops-lab-policies').catch(() => {})
               waitForWindowClose(req.user.sessionId, namespace)
             } else if (mode === 'uncontrolled') {
