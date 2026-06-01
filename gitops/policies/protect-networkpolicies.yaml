@@ -36,14 +36,20 @@ spec:
               kinds: [NetworkPolicy]
               namespaces: [secops-lab]
               operations: [DELETE]
-      # Allow only cluster-admin and ArgoCD service accounts to delete
-      # Everyone else — including network-tooling-sa — is blocked
+      # Allow GitOps (ArgoCD), the lab's own remediation controller (backend-sa),
+      # and real cluster-admins to delete. NOTE: system:masters is a GROUP, not a
+      # username — it must be checked against userInfo.groups, otherwise no real
+      # admin is ever exempt. Everyone else — including network-tooling-sa — is blocked.
       preconditions:
         all:
           - key: "{{ request.userInfo.username }}"
             operator: NotIn
             value:
               - system:serviceaccount:argocd:argocd-application-controller
+              - system:serviceaccount:secops-lab:backend-sa
+          - key: "{{ request.userInfo.groups }}"
+            operator: AllNotIn
+            value:
               - system:masters
       validate:
         message: >

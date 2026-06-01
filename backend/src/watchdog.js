@@ -13,6 +13,7 @@
 
 const { getDb }  = require('./db')
 const k8s        = require('./routes/k8s-client')
+const { resetCluster } = require('./cluster-reset')
 
 let watchdogTimer = null
 let lastCheck     = null
@@ -65,29 +66,10 @@ async function runWatchdogCheck() {
 
   console.log(`[watchdog] dirty cluster detected, no active session (${reason}) — resetting`)
 
-  // Resume ArgoCD sync if suspended
-  const suspended = await k8s.isArgoCDSuspended('secops-lab').catch(() => false)
-  if (suspended) {
-    await k8s.resumeArgoCDSync('secops-lab').catch(err =>
-      console.error('[watchdog] resume sync error:', err.message))
-    await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-  }
-
-  // Trigger ArgoCD sync
-  await k8s.syncArgoCD('secops-lab').catch(err =>
-    console.error('[watchdog] sync error:', err.message))
-  await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
-
-  // Reset state machine
-  db.prepare(`
-    UPDATE scenario_state SET
-      status = 'idle', scenario = NULL, mode = NULL, session_id = NULL,
-      argocd_suspended = 0, kyverno_deleted = 0,
-      attack_started_at = NULL, compromised_at = NULL,
-      restored_at = NULL, dwell_time_seconds = NULL,
-      window_started_at = NULL, window_ended_at = NULL
-    WHERE id = 1
-  `).run()
+  // Shared cleanup — resync + delete untracked artifacts + clear events + reset
+  // state (see cluster-reset.js). Keeps the watchdog in lock-step with the
+  // manual reset paths.
+  await resetCluster().catch(err => console.error('[watchdog] reset error:', err.message))
 
   lastReset = new Date().toISOString()
   console.log(`[watchdog] reset complete at ${lastReset}`)

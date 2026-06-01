@@ -8,6 +8,7 @@
 const express   = require('express')
 const { getDb } = require('../db')
 const k8s       = require('./k8s-client')
+const { resetCluster } = require('../cluster-reset')
 const router    = express.Router()
 
 // GET /admin/dashboard — all data for admin UI
@@ -73,23 +74,7 @@ router.post('/session/release', (req, res) => {
 
 // POST /admin/cluster/reset — hard reset from admin UI
 router.post('/cluster/reset', async (req, res) => {
-  const db = getDb()
-
-  await k8s.resumeArgoCDSync('secops-lab').catch(() => {})
-  await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-  await k8s.syncArgoCD('secops-lab').catch(() => {})
-  await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
-
-  db.prepare(`
-    UPDATE scenario_state SET
-      status = 'idle', scenario = NULL, mode = NULL, session_id = NULL,
-      argocd_suspended = 0, kyverno_deleted = 0,
-      attack_started_at = NULL, compromised_at = NULL,
-      restored_at = NULL, dwell_time_seconds = NULL,
-      window_started_at = NULL, window_ended_at = NULL
-    WHERE id = 1
-  `).run()
-
+  await resetCluster()   // shared cleanup — see cluster-reset.js
   return res.json({ reset: true })
 })
 

@@ -3,9 +3,9 @@
     <div class="flex items-center gap-2 mb-2">
       <span class="text-red-400">💀</span>
       <span class="text-xs font-bold text-red-300 uppercase tracking-wide">
-        Stolen Data Sample
+        {{ title }}
       </span>
-      <span class="text-xs text-gray-500">(real data — captured live from this lab cluster)</span>
+      <span class="text-xs text-gray-500">{{ subtitle }}</span>
     </div>
     <pre class="text-xs text-green-400 font-mono overflow-x-auto whitespace-pre-wrap
                 leading-relaxed bg-black/40 rounded p-2">{{ data }}</pre>
@@ -13,7 +13,17 @@
 </template>
 
 <script setup>
-defineProps({
-  data: { type: String, required: true }
+import { computed } from 'vue'
+
+const props = defineProps({
+  data:     { type: String, required: true },
+  scenario: { type: String, default: '' }
 })
+
+// S2 doesn't exfiltrate data — it opens a network path to the DB. Frame it honestly.
+const isNetwork = computed(() => props.scenario === 'network-policy-bypass')
+const title     = computed(() => isNetwork.value ? 'Database Access Gained' : 'Stolen Data Sample')
+const subtitle  = computed(() => isNetwork.value
+  ? '(live — network path opened on this lab cluster)'
+  : '(real data — captured live from this lab cluster)')
 </script>

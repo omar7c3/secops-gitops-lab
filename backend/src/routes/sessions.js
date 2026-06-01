@@ -7,11 +7,12 @@
 
 const express = require('express')
 const { getDb } = require('../db')
+const { resetCluster } = require('../cluster-reset')
 const router = express.Router()
 
 // ── POST /session/end ─────────────────────────────────────────────────────────
 // Visitor clicks "End Session" button
-router.post('/end', (req, res) => {
+router.post('/end', async (req, res) => {
   const { sessionId } = req.user
   const db = getDb()
 
@@ -26,11 +27,9 @@ router.post('/end', (req, res) => {
     VALUES (?, ?, 'SESSION_END', ?)
   `).run(sessionId, req.user.tokenId, JSON.stringify({ reason: 'user_ended' }))
 
-  // Signal watchdog that session ended — it will check if cluster is dirty
-  // and reset if needed
-  db.prepare(`
-    UPDATE scenario_state SET status = 'idle' WHERE id = 1 AND status = 'idle'
-  `).run()
+  // Clean the cluster now so the next visitor starts from a known-good baseline
+  // (don't defer to the watchdog — that leaves a dirty-cluster window).
+  await resetCluster().catch(() => {})
 
   return res.json({ ended: true, sessionId })
 })

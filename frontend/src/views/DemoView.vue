@@ -238,7 +238,7 @@
           </template>
 
           <!-- Stolen data sample -->
-          <StolenDataPanel v-if="stolenData" :data="stolenData" />
+          <StolenDataPanel v-if="stolenData" :data="stolenData" :scenario="scenario.scenarioState.scenario" />
 
           <!-- Lateral movement window (Scenario 2) -->
           <div v-if="scenario.windowSeconds > 0 && !scenario.isIdle">

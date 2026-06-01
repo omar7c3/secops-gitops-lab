@@ -10,6 +10,7 @@ const { exec } = require('child_process')
 const path     = require('path')
 const { getDb } = require('../db')
 const k8s      = require('./k8s-client')
+const { resetCluster } = require('../cluster-reset')
 
 const router = express.Router()
 
@@ -129,15 +130,10 @@ router.post('/run', async (req, res) => {
           const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
           if (st && st.status === 'attacking') {
             if (mode === 'uncontrolled' && scenario === 'network-policy-bypass') {
-              // Resume + hard-sync BOTH apps. secops-lab restores deny-all + the
-              // egress allows (re-isolating target-app → postgres sealed → window
-              // closes); secops-lab-policies restores protect-networkpolicies (so
-              // proof shows the delete blocked). Then poll for deny-all's return.
-              k8s.resumeArgoCDSync('secops-lab').catch(() => {})
-              k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-              k8s.syncArgoCD('secops-lab').catch(() => {})
-              k8s.syncArgoCD('secops-lab-policies').catch(() => {})
-              waitForWindowClose(req.user.sessionId, namespace)
+              // Automated remediation: delete the attacker's egress policy (seals
+              // postgres → closes the window), then resume GitOps to restore
+              // deny-all + protect-networkpolicies, then run proof.
+              remediateS2(req.user.sessionId, namespace)
             } else if (mode === 'uncontrolled') {
               const proofDelay = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
               console.log(`[scenario] attack exited — auto-proof in ${proofDelay / 1000}s`)
@@ -227,40 +223,7 @@ router.post('/proof', async (req, res) => {
 
 // ── POST /scenario/reset ──────────────────────────────────────────────────────
 router.post('/reset', async (req, res) => {
-  const db  = getDb()
-  const now = Math.floor(Date.now() / 1000)
-
-  // Resume ArgoCD sync if suspended (both apps — S2 suspends secops-lab-policies)
-  await k8s.resumeArgoCDSync('secops-lab').catch(() => {})
-  await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-  await k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-
-  // Trigger ArgoCD hard sync
-  await k8s.syncArgoCD('secops-lab').catch(() => {})
-  await k8s.syncArgoCD('secops-lab-policies').catch(() => {})
-
-  // Delete attack artifacts ArgoCD won't prune (not in Git)
-  const namespace = global.CONFIG.cluster.namespace
-  exec(`kubectl delete pod privileged-attack-pod -n ${namespace} --ignore-not-found`, () => {})
-  exec(`kubectl delete networkpolicy attacker-postgres-exfil -n ${namespace} --ignore-not-found`, () => {})
-
-  // Clear event feed for this session
-  const state = db.prepare('SELECT * FROM scenario_state WHERE id = 1').get()
-  if (state.session_id) {
-    db.prepare(`DELETE FROM events WHERE session_id = ?`).run(state.session_id)
-  }
-
-  // Reset state machine
-  db.prepare(`
-    UPDATE scenario_state SET
-      status = 'idle', scenario = NULL, mode = NULL, session_id = NULL,
-      argocd_suspended = 0, kyverno_deleted = 0,
-      attack_started_at = NULL, compromised_at = NULL,
-      restored_at = NULL, dwell_time_seconds = NULL,
-      window_started_at = NULL, window_ended_at = NULL
-    WHERE id = 1
-  `).run()
-
+  await resetCluster()   // shared cleanup — see cluster-reset.js
   return res.json({ reset: true })
 })
 
@@ -390,55 +353,38 @@ function waitForReconcile(sessionId, scenario, compromisedAt, attempt = 0) {
   }, INTERVAL_MS)
 }
 
-// ── Helper — S2: close the lateral-movement window on real reconciliation ─────
-// The attacker plants no backdoor, so the path closes when ArgoCD (secops-lab,
-// never suspended) restores deny-all. Stamp window_ended at that moment, then —
-// once protect-networkpolicies is also back — run proof to show the re-attack
-// is blocked. Falls back to a timeout cap.
-function waitForWindowClose(sessionId, namespace, attempt = 0) {
-  const INTERVAL_MS  = 3000
-  const MAX_ATTEMPTS = Math.ceil((global.CONFIG.scenario.reconcile_timeout_seconds || 120) / (INTERVAL_MS / 1000))
+// ── Helper — S2: automated remediation closes the lateral-movement window ─────
+// The attacker ADDED an egress NetworkPolicy (attacker-postgres-exfil) to reach
+// postgres. ArgoCD won't prune it (not in Git), so the SOC/automation removes it
+// directly — sealing the DB path. protect-networkpolicies is still suspended at
+// this point, so the delete is allowed. Then GitOps is resumed to restore
+// deny-all + the guard + the service account, and proof confirms the seal.
+function remediateS2(sessionId, namespace) {
+  const db    = getDb()
+  const state = db.prepare('SELECT window_started_at FROM scenario_state WHERE id = 1').get()
+  const now   = Math.floor(Date.now() / 1000)
+  const windowSecs = state && state.window_started_at ? now - state.window_started_at : 0
 
-  setTimeout(async () => {
-    const db    = getDb()
-    const state = db.prepare('SELECT status, window_started_at, window_ended_at FROM scenario_state WHERE id = 1').get()
+  exec(`kubectl delete networkpolicy attacker-postgres-exfil -n ${namespace} --ignore-not-found`, () => {
+    emitEvent(sessionId, 'RESTORE', 'INFO', 'network-policy-bypass',
+      'SOC response — removing attacker-created NetworkPolicy',
+      'Incident response deletes attacker-postgres-exfil, revoking target-app’s egress path to the database. Real-world hardening: alert on unauthorized NetworkPolicy create/modify (Kubernetes audit logs, Falco, Kyverno), keep NetworkPolicies GitOps-managed only, and block or auto-revert out-of-band changes at admission — so a stolen NetworkPolicy-admin token cannot open a path that survives reconciliation.')
 
-    // Aborted (reset) — stop polling
-    if (!state || state.status === 'idle') return
+    db.prepare(`UPDATE scenario_state SET window_ended_at = ? WHERE id = 1`).run(now)
+    emitEvent(sessionId, 'RECONCILE', 'SUCCESS', 'network-policy-bypass',
+      `Database path sealed — lateral movement window closed (${windowSecs}s)`,
+      'The attacker NetworkPolicy is gone and ArgoCD restores deny-all + protect-networkpolicies. target-app can no longer reach postgres. The breach window was bounded by detection + remediation time.')
 
-    const now         = Math.floor(Date.now() / 1000)
-    const denyAllBack = await k8s.resourceExists(`networkpolicy deny-all -n ${namespace}`).catch(() => false)
+    // Restore GitOps-managed state (deny-all, protect-networkpolicies, the SA),
+    // then prove the re-attack is blocked.
+    k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
+    k8s.resumeArgoCDSync('secops-lab').catch(() => {})
+    k8s.syncArgoCD('secops-lab-policies').catch(() => {})
+    k8s.syncArgoCD('secops-lab').catch(() => {})
 
-    // Stamp the window close the moment deny-all is reconciled back
-    if (denyAllBack && state.window_ended_at == null) {
-      const windowSecs = state.window_started_at ? now - state.window_started_at : 0
-      db.prepare(`UPDATE scenario_state SET window_ended_at = ? WHERE id = 1`).run(now)
-      emitEvent(sessionId, 'RECONCILE', 'SUCCESS', 'network-policy-bypass',
-        `deny-all restored — lateral movement window closed (${windowSecs}s)`,
-        'ArgoCD reconciled the deleted deny-all NetworkPolicy back to desired state. Namespace isolation is re-established and the attacker path to postgres is sealed. No backdoor was planted, so nothing persists.')
-    }
-
-    // Once the admission guard is also restored, prove the re-attack is blocked.
-    const guardBack = await k8s.resourceExists(`clusterpolicy protect-networkpolicies`).catch(() => false)
-    if ((denyAllBack || state.window_ended_at != null) && guardBack) {
-      execProofScript(namespace, 'network-policy-bypass', getDb())
-      return
-    }
-
-    if (attempt >= MAX_ATTEMPTS) {
-      if (state.window_ended_at == null) {
-        const windowSecs = state.window_started_at ? now - state.window_started_at : 0
-        db.prepare(`UPDATE scenario_state SET window_ended_at = ? WHERE id = 1`).run(now)
-        emitEvent(sessionId, 'RECONCILE', 'WARNING', 'network-policy-bypass',
-          `Window close not confirmed — capped at ${windowSecs}s`,
-          'deny-all was not observed restored within the timeout. Check ArgoCD secops-lab application health.')
-      }
-      execProofScript(namespace, 'network-policy-bypass', getDb())
-      return
-    }
-
-    waitForWindowClose(sessionId, namespace, attempt + 1)
-  }, INTERVAL_MS)
+    setTimeout(() => execProofScript(namespace, 'network-policy-bypass', getDb()),
+      (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000)
+  })
 }
 
 // ── Helper — emit event to DB ─────────────────────────────────────────────────
