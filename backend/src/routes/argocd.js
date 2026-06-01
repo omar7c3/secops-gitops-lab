@@ -27,13 +27,18 @@ router.get('/state', async (req, res) => {
       syncStatus:   app.status?.sync?.status,      // Synced | OutOfSync
       healthStatus: app.status?.health?.status,    // Healthy | Degraded | Progressing
       suspended:    app.spec?.syncPolicy?.automated === null || !app.spec?.syncPolicy?.automated,
-      resources:    (app.status?.resources || []).map(r => ({
-        kind:      r.kind,
-        name:      r.name,
-        namespace: r.namespace,
-        status:    r.status,
-        health:    r.health?.status
-      }))
+      resources:    (app.status?.resources || [])
+        // Hide the postgres-seed PostSync hook Job — it re-runs and self-deletes
+        // on every ArgoCD sync (which scenarios trigger), so it blinks in/out of
+        // the panel as noise rather than meaningful drift.
+        .filter(r => !(r.kind === 'Job' && r.name === 'postgres-seed'))
+        .map(r => ({
+          kind:      r.kind,
+          name:      r.name,
+          namespace: r.namespace,
+          status:    r.status,
+          health:    r.health?.status
+        }))
     }))
 
     return res.json({ apps: state, timestamp: Date.now() })

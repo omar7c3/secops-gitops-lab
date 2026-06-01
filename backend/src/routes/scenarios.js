@@ -122,16 +122,16 @@ router.post('/run', async (req, res) => {
           // that path waits for the visitor to click Restore Protection instead.
           const st = getDb().prepare('SELECT status FROM scenario_state WHERE id = 1').get()
           if (st && st.status === 'attacking') {
-            if (mode === 'uncontrolled') {
-              const proofDelay = (scenario === 'network-policy-bypass')
-                ? (global.CONFIG.scenario.reconcile_timeout_seconds || 60) * 1000
-                : (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
+            if (mode === 'uncontrolled' && scenario === 'network-policy-bypass') {
+              // Restore the admission guard promptly (resume + hard-sync) so proof
+              // can show the re-attack blocked, then poll for deny-all to be
+              // reconciled back — stamping window_ended at the real close moment.
+              k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
+              k8s.syncArgoCD('secops-lab-policies').catch(() => {})
+              waitForWindowClose(req.user.sessionId, namespace)
+            } else if (mode === 'uncontrolled') {
+              const proofDelay = (global.CONFIG.scenario.proof_delay_seconds || 5) * 1000
               console.log(`[scenario] attack exited — auto-proof in ${proofDelay / 1000}s`)
-              // S2: resume policies app so ArgoCD restores protect-networkpolicies
-              // before proof runs (proof tries to delete deny-all — should be blocked)
-              if (scenario === 'network-policy-bypass') {
-                k8s.resumeArgoCDSync('secops-lab-policies').catch(() => {})
-              }
               setTimeout(() => execProofScript(namespace, scenario, getDb()), proofDelay)
             } else {
               // Controlled mode: attack being blocked IS the demonstration — no proof needed
@@ -320,10 +320,15 @@ function waitForRunningPod(namespace, appLabel, timeoutMs = 60000) {
     exec(rolloutCmd, { timeout: timeoutMs + 5000 }, (err) => {
       if (err) return reject(new Error(`rollout did not complete for ${appLabel}: ${err.message}`))
 
-      const getCmd = `kubectl get pod -n ${namespace} -l app=${appLabel} --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}"`
+      // Pick the NEWEST Running pod. Right after a SA swap the old pod is still
+      // in Running/Terminating phase, and an unordered items[0] can select it —
+      // running attack.sh in the pre-swap pod (no token mounted), which surfaces
+      // as a false "No token found". Sort by creationTimestamp and take the last.
+      const getCmd = `kubectl get pod -n ${namespace} -l app=${appLabel} --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp -o name`
       exec(getCmd, (err2, stdout) => {
-        const name = stdout?.trim()
-        if (!err2 && name) return resolve(name)
+        const names  = (stdout || '').trim().split('\n').map(s => s.trim()).filter(Boolean)
+        const newest = names.length ? names[names.length - 1].replace(/^pod\//, '') : ''
+        if (!err2 && newest) return resolve(newest)
         reject(new Error(`no Running pod found for app=${appLabel} after rollout`))
       })
     })
@@ -334,8 +339,8 @@ function waitForRunningPod(namespace, appLabel, timeoutMs = 60000) {
 // Dwell time represents the true attacker-access window: from compromise until
 // the cluster is verified back to desired state — NOT the button-click moment.
 function waitForReconcile(sessionId, scenario, compromisedAt, attempt = 0) {
-  const MAX_ATTEMPTS = 30   // ~90s at a 3s interval
   const INTERVAL_MS  = 3000
+  const MAX_ATTEMPTS = Math.ceil((global.CONFIG.scenario.reconcile_timeout_seconds || 120) / (INTERVAL_MS / 1000))
 
   setTimeout(async () => {
     const db    = getDb()
@@ -356,12 +361,16 @@ function waitForReconcile(sessionId, scenario, compromisedAt, attempt = 0) {
       emitEvent(sessionId, 'RECONCILE', 'SUCCESS', scenario,
         `Cluster reconciled to desired state — dwell time ${Math.floor(dwell / 60)}m ${dwell % 60}s`,
         'ArgoCD has restored all drift: Kyverno admission policies re-created and the service account swapped back to minimal-sa. The attacker-created pod was removed by the SOC. Dwell time stops here — this is the true attacker-access window.')
+      // Reconciled — NOW run proof to demonstrate controls hold, then complete.
+      // Chaining proof after reconciliation (instead of a fixed frontend timer)
+      // keeps the run button disabled until every event has fired.
+      execProofScript(global.CONFIG.cluster.namespace, scenario, db)
       return
     }
 
     if (attempt >= MAX_ATTEMPTS) {
       const dwell = compromisedAt ? now - compromisedAt : 0
-      db.prepare(`UPDATE scenario_state SET dwell_time_seconds = ? WHERE id = 1`).run(dwell)
+      db.prepare(`UPDATE scenario_state SET dwell_time_seconds = ?, status = 'complete' WHERE id = 1`).run(dwell)
       emitEvent(sessionId, 'RECONCILE', 'WARNING', scenario,
         `Reconciliation not confirmed — dwell time capped at ${Math.floor(dwell / 60)}m ${dwell % 60}s`,
         'Desired state was not reached within the timeout (a Kyverno policy, the target-app service account, or the attacker pod did not return to baseline). Dwell time has been frozen at the cap — check ArgoCD application health.')
@@ -369,6 +378,57 @@ function waitForReconcile(sessionId, scenario, compromisedAt, attempt = 0) {
     }
 
     waitForReconcile(sessionId, scenario, compromisedAt, attempt + 1)
+  }, INTERVAL_MS)
+}
+
+// ── Helper — S2: close the lateral-movement window on real reconciliation ─────
+// The attacker plants no backdoor, so the path closes when ArgoCD (secops-lab,
+// never suspended) restores deny-all. Stamp window_ended at that moment, then —
+// once protect-networkpolicies is also back — run proof to show the re-attack
+// is blocked. Falls back to a timeout cap.
+function waitForWindowClose(sessionId, namespace, attempt = 0) {
+  const INTERVAL_MS  = 3000
+  const MAX_ATTEMPTS = Math.ceil((global.CONFIG.scenario.reconcile_timeout_seconds || 120) / (INTERVAL_MS / 1000))
+
+  setTimeout(async () => {
+    const db    = getDb()
+    const state = db.prepare('SELECT status, window_started_at, window_ended_at FROM scenario_state WHERE id = 1').get()
+
+    // Aborted (reset) — stop polling
+    if (!state || state.status === 'idle') return
+
+    const now         = Math.floor(Date.now() / 1000)
+    const denyAllBack = await k8s.resourceExists(`networkpolicy deny-all -n ${namespace}`).catch(() => false)
+
+    // Stamp the window close the moment deny-all is reconciled back
+    if (denyAllBack && state.window_ended_at == null) {
+      const windowSecs = state.window_started_at ? now - state.window_started_at : 0
+      db.prepare(`UPDATE scenario_state SET window_ended_at = ? WHERE id = 1`).run(now)
+      emitEvent(sessionId, 'RECONCILE', 'SUCCESS', 'network-policy-bypass',
+        `deny-all restored — lateral movement window closed (${windowSecs}s)`,
+        'ArgoCD reconciled the deleted deny-all NetworkPolicy back to desired state. Namespace isolation is re-established and the attacker path to postgres is sealed. No backdoor was planted, so nothing persists.')
+    }
+
+    // Once the admission guard is also restored, prove the re-attack is blocked.
+    const guardBack = await k8s.resourceExists(`clusterpolicy protect-networkpolicies`).catch(() => false)
+    if ((denyAllBack || state.window_ended_at != null) && guardBack) {
+      execProofScript(namespace, 'network-policy-bypass', getDb())
+      return
+    }
+
+    if (attempt >= MAX_ATTEMPTS) {
+      if (state.window_ended_at == null) {
+        const windowSecs = state.window_started_at ? now - state.window_started_at : 0
+        db.prepare(`UPDATE scenario_state SET window_ended_at = ? WHERE id = 1`).run(now)
+        emitEvent(sessionId, 'RECONCILE', 'WARNING', 'network-policy-bypass',
+          `Window close not confirmed — capped at ${windowSecs}s`,
+          'deny-all was not observed restored within the timeout. Check ArgoCD secops-lab application health.')
+      }
+      execProofScript(namespace, 'network-policy-bypass', getDb())
+      return
+    }
+
+    waitForWindowClose(sessionId, namespace, attempt + 1)
   }, INTERVAL_MS)
 }
 

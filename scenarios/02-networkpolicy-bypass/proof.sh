@@ -51,19 +51,16 @@ else
   exit 0
 fi
 
-# Verify attacker backdoor NetworkPolicy was cleaned up
-BACKDOOR=$(kubectl get networkpolicy attacker-postgres-exfil \
-  --token="$TOKEN" \
-  --server="$APISERVER" \
-  --certificate-authority="$CA" \
-  -n "$NAMESPACE" 2>/dev/null && echo "STILL_EXISTS" || echo "GONE")
+# Verify the database path is sealed again — deny-all restored, no backdoor was
+# planted, so target-app egress to postgres should be denied once more.
+POSTGRES_RESULT=$(bash -c 'echo > /dev/tcp/postgres/5432' 2>/dev/null && echo "OPEN" || echo "blocked")
 
-if [ "$BACKDOOR" = "GONE" ]; then
+if [ "$POSTGRES_RESULT" = "blocked" ]; then
   emit "PROOF" "SUCCESS" \
-    "Attacker backdoor NetworkPolicy removed" \
-    "attacker-postgres-exfil was deleted during reset. The database is no longer reachable from this pod. GitOps fully restored the security posture."
+    "Database path sealed — postgres unreachable" \
+    "With deny-all restored and no attacker backdoor planted, target-app egress to postgres is denied again. The lateral movement path that was open during the window is now closed. GitOps fully restored the security posture."
 else
   emit "PROOF" "WARNING" \
-    "Attacker backdoor NetworkPolicy still present" \
-    "attacker-postgres-exfil still exists. Run Reset to Safe State to remove it."
+    "Database still reachable — check cluster state" \
+    "postgres:5432 is still reachable after reconciliation. Expected it to be sealed once deny-all is restored. Run Reset to Safe State and verify NetworkPolicies."
 fi

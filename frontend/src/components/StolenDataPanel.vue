@@ -5,7 +5,7 @@
       <span class="text-xs font-bold text-red-300 uppercase tracking-wide">
         Stolen Data Sample
       </span>
-      <span class="text-xs text-gray-500">(fake — demo only)</span>
+      <span class="text-xs text-gray-500">(real data — captured live from this lab cluster)</span>
     </div>
     <pre class="text-xs text-green-400 font-mono overflow-x-auto whitespace-pre-wrap
                 leading-relaxed bg-black/40 rounded p-2">{{ data }}</pre>

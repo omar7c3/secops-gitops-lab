@@ -181,18 +181,33 @@ async function isArgoCDSuspended(appName) {
 //   • the attacker's privileged pod is gone
 function isS1Reconciled() {
   const { exec } = require('child_process')
-  const script = [
-    `POL=$(kubectl get clusterpolicy no-privileged-containers no-hostpath-mount -o name 2>/dev/null | wc -l)`,
-    `SA=$(kubectl get deployment target-app -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)`,
-    `POD=$(kubectl get pod privileged-attack-pod -n ${NAMESPACE} --ignore-not-found -o name 2>/dev/null)`,
-    `echo "$POL|$SA|$POD"`
-  ].join('; ')
+  // Three independent kubectl reads — NOT a compound `sh -c "...echo "$X"..."`,
+  // whose nested double quotes mangle and make the check always fail.
+  const run = (cmd) => new Promise((resolve) => {
+    exec(cmd, (err, stdout) => resolve(err ? null : (stdout || '').trim()))
+  })
 
+  return Promise.all([
+    run(`kubectl get clusterpolicy no-privileged-containers no-hostpath-mount -o name`),
+    run(`kubectl get deployment target-app -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.serviceAccountName}'`),
+    run(`kubectl get pod privileged-attack-pod -n ${NAMESPACE} --ignore-not-found -o name`)
+  ]).then(([policies, sa, pod]) => {
+    // `kubectl get a b` exits non-zero (→ null) if either policy is missing.
+    const policiesBack = policies != null && policies.split('\n').filter(Boolean).length === 2
+    const saReverted   = sa === 'minimal-sa'
+    const podGone      = pod != null && pod.length === 0
+    return policiesBack && saReverted && podGone
+  })
+}
+
+// ── Generic existence check via kubectl ───────────────────────────────────────
+// kindArgs e.g. "networkpolicy deny-all -n secops-lab" or "clusterpolicy protect-networkpolicies".
+// Resolves true only if the resource is present (kubectl exits 0 with output).
+function resourceExists(kindArgs) {
+  const { exec } = require('child_process')
   return new Promise((resolve) => {
-    exec(`sh -c "${script}"`, (err, stdout) => {
-      if (err) return resolve(false)
-      const [pol, sa, pod] = (stdout || '').trim().split('|')
-      resolve(pol === '2' && sa === 'minimal-sa' && (!pod || pod.length === 0))
+    exec(`kubectl get ${kindArgs} -o name`, (err, stdout) => {
+      resolve(!err && (stdout || '').trim().length > 0)
     })
   })
 }
@@ -205,5 +220,6 @@ module.exports = {
   syncArgoCD,
   isClusterDirty,
   isArgoCDSuspended,
-  isS1Reconciled
+  isS1Reconciled,
+  resourceExists
 }

@@ -35,6 +35,12 @@ export const useScenarioStore = defineStore('scenario', () => {
   const isComplete = computed(() =>
     scenarioState.value.status === 'complete')
 
+  // An Allow Attack (uncontrolled) run mutated the cluster — force an explicit
+  // Reset to Safe State before another scenario can run, so results don't mix.
+  const needsReset = computed(() =>
+    scenarioState.value.status === 'complete' &&
+    scenarioState.value.mode === 'uncontrolled')
+
   // ── Security posture — live control status derived from events ────────────
   const securityPosture = computed(() => {
     const sc  = scenarioState.value.scenario
@@ -89,10 +95,11 @@ export const useScenarioStore = defineStore('scenario', () => {
     }
 
     if (sc === 'network-policy-bypass') {
-      const kyvernoRemoved  = has('SETUP', 'protect-networkpolicies')
-      const kyvernoBlocked  = has('DETECT', 'kyverno')
-      const npDeleted       = has('IMPACT', 'lateral movement') || has('IMPACT', 'window open')
-      const recovered       = st === 'complete' || has('PROOF', '')
+      const kyvernoRemoved   = has('SETUP', 'protect-networkpolicies')          // backend removed guard (allow attack)
+      const kyvernoBlocked   = has('DETECT', 'kyverno')                         // with controls: delete blocked at admission
+      const denyAllDeleted   = has('ATTACK', 'network isolation destroyed')     // deny-all actually deleted (allow attack)
+      const denyAllRestored  = has('RECONCILE', 'deny-all restored') || st === 'complete'
+      const recovered        = st === 'complete' || has('PROOF', '')
 
       return [
         {
@@ -104,7 +111,7 @@ export const useScenarioStore = defineStore('scenario', () => {
         {
           label:       'NetworkPolicy: deny-all',
           description: 'Default-deny all ingress and egress in the namespace',
-          status:      status(npDeleted, recovered),
+          status:      status(denyAllDeleted, denyAllRestored),
           restoredBy:  'ArgoCD auto-reconcile (~30s)'
         },
         {
@@ -212,7 +219,7 @@ export const useScenarioStore = defineStore('scenario', () => {
 
   return {
     events, scenarioState, argocdState, dwellSeconds, windowSeconds,
-    isCompromised, isAttacking, isReconciling, isIdle, isComplete, timelineEvents, securityPosture,
+    isCompromised, isAttacking, isReconciling, isIdle, isComplete, needsReset, timelineEvents, securityPosture,
     startPolling, stopPolling,
     runScenario, restoreProtection, runProof, resetScenario
   }

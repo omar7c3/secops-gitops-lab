@@ -1,8 +1,8 @@
 <template>
-  <div class="min-h-screen bg-gray-950 text-white flex flex-col">
+  <div class="h-screen overflow-hidden bg-gray-950 text-white flex flex-col">
 
     <!-- Header -->
-    <header class="border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+    <header class="shrink-0 border-b border-gray-800 px-6 py-3 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <span class="text-xl">🔐</span>
         <span class="font-semibold text-white">SecOps GitOps Lab</span>
@@ -25,7 +25,7 @@
     </header>
 
     <!-- Scenario selector -->
-    <div class="border-b border-gray-800 px-6 py-3 flex items-center gap-4">
+    <div class="shrink-0 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
       <span class="text-sm text-gray-400">Scenario:</span>
       <button
         v-for="s in scenarios"
@@ -42,14 +42,17 @@
       </button>
     </div>
 
-    <!-- Three panels -->
-    <div class="flex-1 grid grid-cols-3 gap-0 overflow-hidden" style="height: calc(100vh - 180px)">
+    <!-- Timeline bar (top — chronological spine of the demo) -->
+    <TimelineBar :events="scenario.timelineEvents" :dwell="scenario.dwellSeconds" />
 
-      <!-- Panel 1: Attack Feed -->
-      <div class="border-r border-gray-800 flex flex-col">
+    <!-- Three panels -->
+    <div class="flex-1 min-h-0 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-0 overflow-hidden">
+
+      <!-- Panel 1: Events Feed -->
+      <div class="border-r border-gray-800 flex flex-col min-h-0 overflow-hidden">
         <div class="px-4 py-2 bg-gray-900 border-b border-gray-800 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-          <span class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Attack Feed</span>
+          <span class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Events Feed</span>
         </div>
         <div ref="feedEl" class="flex-1 overflow-y-auto p-3 space-y-2 font-mono text-xs">
           <div
@@ -79,7 +82,7 @@
       </div>
 
       <!-- Panel 2: System State (Git vs Live) -->
-      <div class="border-r border-gray-800 flex flex-col">
+      <div class="border-r border-gray-800 flex flex-col min-h-0 overflow-hidden">
         <div class="px-4 py-2 bg-gray-900 border-b border-gray-800 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full"
                 :class="systemHealthColor"></span>
@@ -122,7 +125,7 @@
       </div>
 
       <!-- Panel 3: Impact / Security Posture -->
-      <div class="flex flex-col">
+      <div class="flex flex-col min-h-0 overflow-hidden">
         <div class="px-4 py-2 bg-gray-900 border-b border-gray-800 flex items-center justify-between">
           <span class="text-xs font-semibold text-gray-300 uppercase tracking-wider">
             {{ scenario.isCompromised ? 'Impact' : 'Security Posture' }}
@@ -260,14 +263,22 @@
       </div>
     </div>
 
-    <!-- Timeline bar -->
-    <TimelineBar :events="scenario.timelineEvents" :dwell="scenario.dwellSeconds" />
+    <!-- Reset-required banner — shown after an Allow Attack run -->
+    <div v-if="scenario.needsReset"
+         class="shrink-0 bg-orange-950/60 border-t border-orange-800 px-6 py-2 flex items-center gap-2 text-sm text-orange-300">
+      <span class="text-base">⚠</span>
+      <span>
+        Allow Attack changed the cluster state. Click
+        <strong class="text-orange-200">Reset to Safe State</strong>
+        before running another scenario — otherwise results will mix.
+      </span>
+    </div>
 
     <!-- Controls -->
-    <div class="border-t border-gray-800 px-6 py-3 flex items-center gap-3">
+    <div class="shrink-0 border-t border-gray-800 px-6 py-3 flex items-center gap-3">
       <button
         @click="handleRunOrReset"
-        :disabled="!scenario.isIdle && !scenario.isComplete"
+        :disabled="scenario.needsReset || (!scenario.isIdle && !scenario.isComplete)"
         class="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500
                text-white font-semibold px-5 py-2 rounded-lg text-sm transition-colors"
       >
@@ -275,14 +286,17 @@
           <span class="w-3 h-3 border-2 border-gray-400 border-t-white rounded-full animate-spin"></span>
           Attack in progress...
         </span>
+        <span v-else-if="scenario.needsReset">Reset required</span>
         <span v-else-if="scenario.isComplete">▶ Run Again</span>
         <span v-else>▶ Run Scenario</span>
       </button>
 
       <button
         @click="handleReset"
-        class="border border-gray-700 hover:border-gray-500 text-gray-400 hover:text-white
-               px-4 py-2 rounded-lg text-sm transition-colors"
+        :class="scenario.needsReset
+          ? 'border-orange-500 text-orange-300 hover:bg-orange-900/40 animate-pulse'
+          : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'"
+        class="border px-4 py-2 rounded-lg text-sm transition-colors"
       >
         🔄 Reset to Safe State
       </button>
@@ -368,10 +382,9 @@ async function handleRunScenario({ mode }) {
 async function handleRestore() {
   restoring.value = true
   try {
+    // Backend now chains: reconcile (freezes dwell) -> proof -> complete.
+    // No client-side proof timer, so the run button stays disabled until done.
     await scenario.restoreProtection()
-    // Wait 45s for ArgoCD to reconcile Kyverno policies before running proof
-    // Proof must run after no-privileged-containers is restored or it may succeed
-    setTimeout(() => scenario.runProof(), 45000)
   } finally {
     restoring.value = false
   }
