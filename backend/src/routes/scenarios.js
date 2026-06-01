@@ -223,7 +223,7 @@ router.post('/proof', async (req, res) => {
 
 // ── POST /scenario/reset ──────────────────────────────────────────────────────
 router.post('/reset', async (req, res) => {
-  await resetCluster()   // shared cleanup — see cluster-reset.js
+  await resetCluster({ actor: 'user', reason: 'manual_reset' })   // shared cleanup — see cluster-reset.js
   return res.json({ reset: true })
 })
 

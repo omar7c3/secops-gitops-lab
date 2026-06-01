@@ -27,6 +27,15 @@ const customApi = kc.makeApiClient(k8s.CustomObjectsApi)
 
 const NAMESPACE = process.env.NAMESPACE || 'secops-lab'
 
+// ArgoCD Application CRD coordinates — spread into CustomObjectsApi calls
+// ({ ...ARGOCD_PARAMS, name }). Applications are namespace-scoped in 'argocd'.
+const ARGOCD_PARAMS = {
+  group:     'argoproj.io',
+  version:   'v1alpha1',
+  namespace: 'argocd',
+  plural:    'applications'
+}
+
 // ── Swap service account on target-app deployment ─────────────────────────────
 // Uses kubectl patch — the k8s client typed API defaults to wrong Content-Type.
 // When mounting a token, adds secops-lab/needs-api-access: "true" to satisfy
@@ -153,10 +162,18 @@ async function isClusterDirty() {
       customApi.getNamespacedCustomObject({ ...ARGOCD_PARAMS, name: 'secops-lab-policies' })
     ])
 
-    return apps.some(app => {
+    const argoDrift = apps.some(app => {
       const syncStatus = app?.status?.sync?.status
       return syncStatus && syncStatus !== 'Synced'
     })
+    if (argoDrift) return true
+
+    // ArgoCD is blind to attacker-created resources (not in Git) — their lingering
+    // presence won't show as OutOfSync. Treat them as dirty so the watchdog cleans up.
+    const ns = process.env.NAMESPACE || 'secops-lab'
+    const podLeft = await resourceExists(`pod privileged-attack-pod -n ${ns}`)
+    const npLeft  = await resourceExists(`networkpolicy attacker-postgres-exfil -n ${ns}`)
+    return podLeft || npLeft
   } catch (err) {
     console.error('[k8s] dirty check error:', err.message)
     return false

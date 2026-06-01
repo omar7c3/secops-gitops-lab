@@ -69,7 +69,7 @@ async function runWatchdogCheck() {
   // Shared cleanup — resync + delete untracked artifacts + clear events + reset
   // state (see cluster-reset.js). Keeps the watchdog in lock-step with the
   // manual reset paths.
-  await resetCluster().catch(err => console.error('[watchdog] reset error:', err.message))
+  await resetCluster({ actor: 'watchdog', reason }).catch(err => console.error('[watchdog] reset error:', err.message))
 
   lastReset = new Date().toISOString()
   console.log(`[watchdog] reset complete at ${lastReset}`)

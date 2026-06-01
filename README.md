@@ -142,15 +142,15 @@ secops-gitops-lab/
 │   ├── policies/              # Kyverno ClusterPolicy definitions
 │   └── base/                  # All Kubernetes manifests (deployments, services,
 │                              #   NetworkPolicies, RBAC, ConfigMaps, PVCs)
-├── scenarios/
-│   ├── 01-privilege-escalation/
-│   │   ├── attack.sh          # Runs inside target-app pod via kubectl exec
-│   │   └── proof.sh           # Re-runs attack after reconciliation to prove controls hold
-│   └── 02-networkpolicy-bypass/
-│       ├── attack.sh
-│       └── proof.sh
 ├── backend/
-│   ├── Dockerfile             # Built from repo root to include scenarios/
+│   ├── Dockerfile             # Build context is backend/ (scenarios/ lives here too)
+│   ├── scenarios/
+│   │   ├── 01-privilege-escalation/
+│   │   │   ├── attack.sh      # Runs inside target-app pod via kubectl exec
+│   │   │   └── proof.sh       # Re-runs attack after reconciliation to prove controls hold
+│   │   └── 02-networkpolicy-bypass/
+│   │       ├── attack.sh
+│   │       └── proof.sh
 │   └── src/
 │       ├── index.js           # Express app — route registration
 │       ├── db.js              # SQLite init (sessions, tokens, events, audit log)
@@ -206,7 +206,7 @@ watchdog:
 
 ## How Attack Scripts Work
 
-Scripts live in `scenarios/` and are baked into the backend Docker image.
+Scripts live in `backend/scenarios/` and are baked into the backend Docker image.
 When a scenario runs, the backend:
 
 1. Patches the `target-app` deployment to swap the service account (Allow Attack mode)

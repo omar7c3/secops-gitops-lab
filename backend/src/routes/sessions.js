@@ -29,7 +29,7 @@ router.post('/end', async (req, res) => {
 
   // Clean the cluster now so the next visitor starts from a known-good baseline
   // (don't defer to the watchdog — that leaves a dirty-cluster window).
-  await resetCluster().catch(() => {})
+  await resetCluster({ actor: 'user', reason: 'session_end' }).catch(() => {})
 
   return res.json({ ended: true, sessionId })
 })

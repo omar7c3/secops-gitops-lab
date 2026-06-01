@@ -74,7 +74,7 @@ router.post('/session/release', (req, res) => {
 
 // POST /admin/cluster/reset — hard reset from admin UI
 router.post('/cluster/reset', async (req, res) => {
-  await resetCluster()   // shared cleanup — see cluster-reset.js
+  await resetCluster({ actor: 'admin', reason: 'force_reset' })   // shared cleanup — see cluster-reset.js
   return res.json({ reset: true })
 })
 

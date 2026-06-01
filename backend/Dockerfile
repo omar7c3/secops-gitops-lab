@@ -1,5 +1,7 @@
 # =============================================================================
 # Backend Dockerfile
+# Build context is the backend/ directory (scenarios/ now lives under backend/):
+#   docker build -f backend/Dockerfile -t <img> backend/
 # =============================================================================
 
 FROM node:20-alpine
@@ -11,10 +13,10 @@ RUN apk add --no-cache curl && \
     curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
     chmod +x kubectl && mv kubectl /usr/local/bin/
 
-COPY backend/package*.json ./
+COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY backend/src/ ./src/
+COPY src/ ./src/
 COPY scenarios/ ./scenarios/
 
 # Data dir for SQLite
