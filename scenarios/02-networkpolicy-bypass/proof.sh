@@ -23,16 +23,33 @@ emit "PROOF" "INFO" \
 
 APISERVER="https://kubernetes.default.svc"
 CA="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+# ── Primary check: is the database path sealed again? ─────────────────────────
+# Token-independent TCP probe — works even after the SA has been reverted to
+# minimal-sa. The egress policies are back, so target-app egress to postgres
+# should be denied once more.
+POSTGRES_RESULT=$(bash -c 'echo > /dev/tcp/postgres/5432' 2>/dev/null && echo "OPEN" || echo "blocked")
+
+if [ "$POSTGRES_RESULT" = "blocked" ]; then
+  emit "PROOF" "SUCCESS" \
+    "Database path sealed — postgres unreachable" \
+    "Egress isolation restored by ArgoCD. target-app egress to postgres is denied again — the path that was open during the window is now closed. GitOps fully restored the security posture."
+else
+  emit "PROOF" "WARNING" \
+    "Database still reachable — check cluster state" \
+    "postgres:5432 is still reachable after reconciliation. Expected it to be sealed once the egress policies are restored. Run Reset to Safe State and verify NetworkPolicies."
+fi
+
+# ── Secondary check: admission guard re-blocks the delete (only if SA mounted) ─
 TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
 
 if [ -z "$TOKEN" ]; then
   emit "PROOF" "SUCCESS" \
     "No token — SA swapped back to minimal-sa" \
-    "network-tooling-sa no longer mounted. Attack cannot start."
+    "network-tooling-sa no longer mounted. ArgoCD reverted target-app to minimal-sa — the attack cannot even start."
   exit 0
 fi
 
-# Try to delete deny-all — should be blocked by Kyverno
 RESULT=$(kubectl delete networkpolicy deny-all \
   --token="$TOKEN" \
   --server="$APISERVER" \
@@ -43,24 +60,9 @@ RESULT=$(kubectl delete networkpolicy deny-all \
 if echo "$RESULT" | grep -q "BLOCKED\|denied\|forbidden\|violation"; then
   emit "PROOF" "SUCCESS" \
     "NetworkPolicy deletion blocked at admission" \
-    "Same attack. Different result. Kyverno blocked the deletion. Lateral movement window: 0 seconds. Database credentials are still in environment but the network path is sealed."
+    "Same attack, different result. Kyverno protect-networkpolicies blocked the deletion at admission — the isolation cannot be stripped again."
 else
   emit "PROOF" "WARNING" \
     "Unexpected result — check cluster state" \
     "Please run Reset to Safe State and verify Kyverno policies are restored."
-  exit 0
-fi
-
-# Verify the database path is sealed again — deny-all restored, no backdoor was
-# planted, so target-app egress to postgres should be denied once more.
-POSTGRES_RESULT=$(bash -c 'echo > /dev/tcp/postgres/5432' 2>/dev/null && echo "OPEN" || echo "blocked")
-
-if [ "$POSTGRES_RESULT" = "blocked" ]; then
-  emit "PROOF" "SUCCESS" \
-    "Database path sealed — postgres unreachable" \
-    "With deny-all restored and no attacker backdoor planted, target-app egress to postgres is denied again. The lateral movement path that was open during the window is now closed. GitOps fully restored the security posture."
-else
-  emit "PROOF" "WARNING" \
-    "Database still reachable — check cluster state" \
-    "postgres:5432 is still reachable after reconciliation. Expected it to be sealed once deny-all is restored. Run Reset to Safe State and verify NetworkPolicies."
 fi
