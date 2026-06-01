@@ -87,7 +87,7 @@ Single AKS cluster (2x Standard_B2s nodes) or local k3d (2 agents + server)
 │   ├── secops-lab              app — workloads, NetworkPolicies
 │   └── secops-lab-policies     app — Kyverno ClusterPolicies
 │
-├── Kyverno (2 replicas)  — Admission policy enforcement
+├── Kyverno (1 replica)  — Admission policy enforcement
 │   ├── disallow-automount-sa-token   — blocks token mounts without documented need
 │   ├── no-privileged-containers      — blocks privileged: true
 │   ├── no-hostpath-mount             — blocks hostPath volumes
@@ -214,7 +214,7 @@ When a scenario runs, the backend:
 3. `kubectl cp`s the script into the pod's `/tmp` directory
 4. `kubectl exec`s it — the script runs inside the pod using the mounted SA token
 5. Each step emits a structured event via `POST /internal` to the backend
-6. The frontend polls `/events/feed` every 2s and renders events in the Attack Feed panel
+6. The frontend polls `/events/feed` every 2s and renders events in the Events Feed panel
 
 For controlled mode (With Controls), the pod has no token — the script exits at step 1
 and auto-triggers the proof phase. For Allow Attack in Scenario 1, state transitions to

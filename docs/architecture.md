@@ -11,14 +11,14 @@ service type differs (LoadBalancer vs NodePort).
 | Component | Role | Pods |
 |---|---|---|
 | ArgoCD | GitOps engine — drift detection + reconciliation | 4 (trimmed: no Dex, no ApplicationSet) |
-| Kyverno | Admission webhook — blocks policy violations at API level | 2 (basic resilience) |
+| Kyverno | Admission webhook — blocks policy violations at API level | 1 (No resilience) |
 | Falco | DaemonSet — runtime syscall monitoring via eBPF | 1 per node |
 | Backend | Token gate + event store + scenario orchestration + watchdog | 1 |
 | Frontend | Vue 3 demo UI | 1 |
 | Target App | Vulnerable workload — exec target for attack scripts | 1 |
 | Postgres | Demo database for Scenario 2 | 1 |
 
-**Total: ~11 pods**
+**Total: ~10 pods**
 
 ## Falco vs Kyverno
 
@@ -56,7 +56,8 @@ Backend swaps SA → network-tooling-sa
   Pod reads network-tooling-sa token
   Pod deletes NetworkPolicy deny-all
   Pod tries to suspend ArgoCD → DENIED (wrong namespace)
-  ~30s lateral movement window
+  Pod creates a new NetworkPolicy to obtain access to the PostgreSQL database server
+  Less than 30s lateral movement window
   ArgoCD auto-reconciles (no suspension possible)
   Window closes
   Proof phase — blocked at admission
