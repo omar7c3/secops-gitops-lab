@@ -23,25 +23,25 @@ scenario:
 
 # ── Cluster ──────────────────────────────────────────────────────────────────
 cluster:
-  target: 'k3s'               # 'aks' or 'k3s' — updated by setup.ps1
+  target: 'civo'               # 'civo' or 'aks' or 'k3s' — updated by setup.ps1
   namespace: 'secops-lab'     # Namespace all workloads run in
 
-# ── Auto Stop/Start (AKS only — ignored for k3s) ─────────────────────────────
+# ── Auto Stop/Start (AKS only — ignored for k3s and CIVO) ─────────────────────────────
 auto_stop:
   enabled: true
   timezone: 'America/New_York'   # IANA timezone — handles DST automatically
   schedule:
-    - days: [Mon, Tue, Wed, Thu, Fri]
+    - days: [Monday, Tuesday, Wednesday, Thursday, Friday]
       start: '08:00'             # Start cluster at 8am
       stop:  '19:00'             # Stop cluster at 7pm
-    - days: [Sat, Sun]
+    - days: [Saturday, Sunday]
       start: null                # Never auto-start on weekends
       stop:  null                # Leave in whatever state it is in
   # Manual override always works regardless of schedule:
   #   az aks start --resource-group <rg> --name <cluster>
   #   az aks stop  --resource-group <rg> --name <cluster>
 
-# ── Local k3s (k3s path only — ignored for AKS) ──────────────────────────────
+# ── Local k3s (k3s path only — ignored for AKS and CIVO) ──────────────────────────────
 local:
   wsl2_distro: 'Ubuntu'          # WSL2 distro to use
   min_kernel_version: '5.8'      # Required for Falco eBPF probe
@@ -89,6 +89,12 @@ messages:
 # Admin portal (http://localhost:30080/admin)
 admin:
   session_hours: 1    # how long admin JWT lasts
+
+
+
+
+
+
 
 
 

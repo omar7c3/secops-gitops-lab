@@ -23,7 +23,8 @@ spec:
     spec:
       serviceAccountName: backend-sa
       automountServiceAccountToken: true
-
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: backend
           image: ghcr.io/omar7c3/secops-backend:latest

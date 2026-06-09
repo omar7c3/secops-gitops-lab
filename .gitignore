@@ -27,23 +27,38 @@ __pycache__/
 Thumbs.db
 
 # IDE
-.vscode/settings.json
+.vscode/
 .idea/
 
-# Secrets — never commit these
+# Logs
+*.log
+logs/
+
+# Environment & Secrets — never commit these
+.env",
+.env.*
+!.env.example
 *.pem
 *.key
-kubeconfig
+**/kubeconfig*
+*.kubeconfig
 config.local.yaml
-
-# Never commit secrets
 **/backend-secrets*
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.tfvars
+
 # Claude AI project intelligence
 .claude/
 .claudeignore
 *.claude-cache
 *.claude-temp
 .*CLAUDE.md
+*.terraform*
 # Claude AI project intelligence
 
 # CCE (code-context-engine)

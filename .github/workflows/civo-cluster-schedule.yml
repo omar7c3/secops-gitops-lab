@@ -1,0 +1,123 @@
+name: Civo Cluster Schedule
+
+on:
+  schedule:
+    - cron: '0 11 * * 1-5'   # 7AM EDT (UTC-4, summer) — Start
+    - cron: '0 12 * * 1-5'   # 7AM EST (UTC-5, winter) — Start
+    - cron: '0 21 * * 1-5'   # 5PM EDT (UTC-4, summer) — Stop
+    - cron: '0 22 * * 1-5'   # 5PM EST (UTC-5, winter) — Stop
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'start'
+        type: choice
+        options:
+          - start
+          - stop
+
+env:
+  CLUSTER_NAME: civo-secops-gitops-lab
+  CLUSTER_SIZE: g4s.kube.medium
+  CLUSTER_NODES: 1
+  CLUSTER_REGION: NYC1
+  CLUSTER_CNI: cilium
+
+jobs:
+  determine-action:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.set-action.outputs.action }}
+    steps:
+      - name: Determine action from schedule or manual trigger
+        id: set-action
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          else
+            ET_HOUR=$(TZ="America/New_York" date +"%H")
+            if [ "$ET_HOUR" == "07" ]; then
+              echo "action=start" >> $GITHUB_OUTPUT
+            else
+              echo "action=stop" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  start-cluster:
+    runs-on: ubuntu-latest
+    needs: determine-action
+    if: needs.determine-action.outputs.action == 'start'
+    steps:
+      - name: Install Civo CLI
+        run: |
+          curl -sL https://civo.com/get | sh
+          sudo mv civo /usr/local/bin/
+
+      - name: Check if cluster already exists
+        id: check-cluster
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          if civo kubernetes show ${{ env.CLUSTER_NAME }} --region ${{ env.CLUSTER_REGION }} -o json > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Cluster already exists, skipping creation."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Start (recreate) cluster
+        if: steps.check-cluster.outputs.exists == 'false'
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          echo "[$(date)] Starting cluster ${{ env.CLUSTER_NAME }} in ${{ env.CLUSTER_REGION }}..."
+          civo kubernetes create ${{ env.CLUSTER_NAME }} \
+            --size ${{ env.CLUSTER_SIZE }} \
+            --nodes ${{ env.CLUSTER_NODES }} \
+            --region ${{ env.CLUSTER_REGION }} \
+            --cni-plugin ${{ env.CLUSTER_CNI }} \
+            --wait
+          echo "[$(date)] Cluster ready."
+
+      - name: Save kubeconfig
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo kubernetes config ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.CLUSTER_REGION }} \
+            --save --merge
+          echo "[$(date)] Kubeconfig saved."
+
+  stop-cluster:
+    runs-on: ubuntu-latest
+    needs: determine-action
+    if: needs.determine-action.outputs.action == 'stop'
+    steps:
+      - name: Install Civo CLI
+        run: |
+          curl -sL https://civo.com/get | sh
+          sudo mv civo /usr/local/bin/
+
+      - name: Check if cluster exists
+        id: check-cluster
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          if civo kubernetes show ${{ env.CLUSTER_NAME }} --region ${{ env.CLUSTER_REGION }} -o json > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Cluster does not exist, nothing to stop."
+          fi
+
+      - name: Stop (delete) cluster
+        if: steps.check-cluster.outputs.exists == 'true'
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          echo "[$(date)] Stopping cluster ${{ env.CLUSTER_NAME }}..."
+          civo kubernetes delete ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.CLUSTER_REGION }} \
+            --yes
+          echo "[$(date)] Cluster deleted."

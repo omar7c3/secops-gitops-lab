@@ -3,23 +3,24 @@
 # Supports two deployment targets:
 #   1. Local  — k3s via k3d inside Docker Desktop + WSL2
 #   2. Cloud  — Azure AKS via Terraform
+#   3. Cloud  — Civo Kubernetes via Terraform
 # =============================================================================
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
-function Write-Header  { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
-function Write-Step    { param($msg) Write-Host "  -> $msg" -ForegroundColor White }
+function Write-Header { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
+function Write-Step { param($msg) Write-Host "  -> $msg" -ForegroundColor White }
 function Write-Success { param($msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
-function Write-Warn    { param($msg) Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
-function Write-Fail    { param($msg) Write-Host "  [FAIL] $msg" -ForegroundColor Red }
-function Write-Info    { param($msg) Write-Host "  [INFO] $msg" -ForegroundColor DarkGray }
+function Write-Warn { param($msg) Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
+function Write-Fail { param($msg) Write-Host "  [FAIL] $msg" -ForegroundColor Red }
+function Write-Info { param($msg) Write-Host "  [INFO] $msg" -ForegroundColor DarkGray }
 
 # ── Config ───────────────────────────────────────────────────────────────────
-$CONFIG_FILE    = "$PSScriptRoot\..\config.yaml"
-$MIN_KERNEL     = [Version]"5.8"
-$NAMESPACE      = "secops-lab"
+$CONFIG_FILE = "$PSScriptRoot\..\config.yaml"
+$MIN_KERNEL = [Version]"5.8"
+$NAMESPACE = "secops-lab"
 #$ARGOCD_VERSION = "5.51.6"   # Helm chart version
 #$KYVERNO_VERSION= "3.1.4"
 #$FALCO_VERSION  = "3.8.7"
@@ -48,13 +49,18 @@ Write-Header "Deployment Target"
 Write-Host ""
 Write-Host "  [1] Local   — k3s via k3d (Docker Desktop + WSL2, zero cost)" -ForegroundColor White
 Write-Host "  [2] Cloud   — Azure AKS   (Terraform, ~`$8-10/mo with auto-stop)" -ForegroundColor White
+Write-Host "  [3] Cloud   — Civo Kubernetes   (Terraform, ~`$8-10/mo with auto-stop)" -ForegroundColor White
 Write-Host ""
 
 do {
-    $choice = Read-Host "  Select target [1/2]"
-} while ($choice -notin @("1","2"))
+    $choice = Read-Host "  Select target [1/2/3]"
+} while ($choice -notin @("1", "2", "3"))
 
-$TARGET = if ($choice -eq "1") { "k3s" } else { "aks" }
+$TARGET = switch ($choice) {
+    "1" { "k3s" }
+    "2" { "aks" }
+    default { "civo" }
+}
 Write-Success "Target selected: $TARGET"
 
 # =============================================================================
@@ -148,8 +154,8 @@ function Install-LocalCluster {
             exit 1
         }
         # Refresh PATH
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
-                    [System.Environment]::GetEnvironmentVariable("PATH","User")
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+        [System.Environment]::GetEnvironmentVariable("PATH", "User")
     }
     Write-Success "k3d available: $(k3d version)"
 
@@ -163,9 +169,9 @@ function Install-LocalCluster {
             exit 1
         }
         $env:PATH = @(
-                    [System.Environment]::GetEnvironmentVariable("PATH","Machine")
-                    [System.Environment]::GetEnvironmentVariable("PATH","User")
-                    ) -join ";"
+            [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+            [System.Environment]::GetEnvironmentVariable("PATH", "User")
+        ) -join ";"
     }
     Write-Success "kubectl available: $(kubectl version --client 2>&1)"
 
@@ -179,9 +185,9 @@ function Install-LocalCluster {
             exit 1
         }
         $env:PATH = @(
-                    [System.Environment]::GetEnvironmentVariable("PATH","Machine")
-                    [System.Environment]::GetEnvironmentVariable("PATH","User")
-                    ) -join ";"
+            [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+            [System.Environment]::GetEnvironmentVariable("PATH", "User")
+        ) -join ";"
     }
     Write-Success "helm available: $(helm version --short)"
 
@@ -195,7 +201,8 @@ function Install-LocalCluster {
         if ($rebuild -eq "y") {
             Write-Step "Deleting existing cluster..."
             k3d cluster delete secops-lab
-        } else {
+        }
+        else {
             Write-Info "Using existing cluster"
         }
     }
@@ -235,24 +242,49 @@ function Install-CloudCluster {
 
     Write-Header "Checking Cloud Prerequisites"
 
-    # 1. Azure CLI
-    Write-Step "Checking Azure CLI..."
-    Assert-CommandExists "az" "Install from: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli"
-    Write-Success "Azure CLI: $(az version --query '\"azure-cli\"' -o tsv)"
+    if ($TARGET -eq "aks") {
+        # 1. Azure CLI
+        Write-Step "Checking Azure CLI..."
+        Assert-CommandExists "az" "Install from: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli"
+        Write-Success "Azure CLI: $(az version --query '\"azure-cli\"' -o tsv)"
 
-    # 2. az login check
-    Write-Step "Checking Azure login..."
-    $account = az account show 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Not logged in to Azure — running az login..."
-        az login
+        # 2. az login check
+        Write-Step "Checking Azure login..."
+        $account = az account show 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Fail "Azure login failed"
-            exit 1
+            Write-Warn "Not logged in to Azure — running az login..."
+            az login
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "Azure login failed"
+                exit 1
+            }
         }
+        $subName = az account show --query name -o tsv
+        Write-Success "Logged in — subscription: $subName"
     }
-    $subName = az account show --query name -o tsv
-    Write-Success "Logged in — subscription: $subName"
+    if ($TARGET -eq "civo") {
+        # 1. Civo CLI
+        Write-Step "Checking Civo CLI..."
+        Assert-CommandExists "civo" "Install from: https://github.com/civo/cli#installation"
+        Write-Success "Civo CLI: $(civo version)"
+
+        # 2. Civo login check
+        Write-Step "Checking Civo login..."
+        $civoAccount = civo apikey show 2>&1
+        if (-not $civoAccount) {
+            Write-Warn "No Civo API key set — please add one..."
+            $env:CIVO_TOKEN = Read-Host -Prompt "Enter your API token: "
+            civo apikey add default $env:CIVO_TOKEN
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "Civo API key setup failed"
+                exit 1
+            }
+        }
+        $civoKeyName = (civo apikey show --output json 2>&1 | ConvertFrom-Json).Name
+        $civoKey = (civo apikey show --output json 2>&1 | ConvertFrom-Json).key
+        $maskedKey = "*" * ($civoKey.Length - 6) + $civoKey.Substring($civoKey.Length - 6)
+        Write-Success "Logged in — API Name: $civoKeyName , API Key: $maskedKey"
+    }
 
     # 3. Terraform
     Write-Step "Checking Terraform..."
@@ -263,8 +295,8 @@ function Install-CloudCluster {
             Write-Fail "Terraform install failed. Install manually: https://developer.hashicorp.com/terraform/install"
             exit 1
         }
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
-                    [System.Environment]::GetEnvironmentVariable("PATH","User")
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+        [System.Environment]::GetEnvironmentVariable("PATH", "User")
     }
     Write-Success "Terraform: $(terraform version -json | ConvertFrom-Json | Select-Object -ExpandProperty terraform_version)"
 
@@ -273,14 +305,18 @@ function Install-CloudCluster {
     Assert-CommandExists "helm"    "Install from: https://helm.sh/docs/intro/install/"
 
     # ── Terraform apply ───────────────────────────────────────────────────────
-    Write-Header "Provisioning AKS Cluster via Terraform"
+    Write-Header "Provisioning $($TARGET.ToUpper()) Cluster via Terraform"
 
-    $tfDir = "$PSScriptRoot\terraform"
+    $tfDir = "$PSScriptRoot\$($TARGET)-terraform"
     Push-Location $tfDir
 
     Write-Step "terraform init..."
     terraform init
     if ($LASTEXITCODE -ne 0) { Write-Fail "terraform init failed"; exit 1 }
+
+    Write-Step "terraform validate..."
+    terraform validate
+    if ($LASTEXITCODE -ne 0) { Write-Fail "terraform validate failed"; exit 1 }
 
     Write-Step "terraform plan..."
     terraform plan -out=tfplan
@@ -300,22 +336,32 @@ function Install-CloudCluster {
 
     Pop-Location
 
-    # ── Get AKS credentials ───────────────────────────────────────────────────
-    Write-Step "Getting AKS credentials..."
-    $rgName      = terraform -chdir="$tfDir" output -raw resource_group_name
-    $clusterName = terraform -chdir="$tfDir" output -raw cluster_name
-    az aks get-credentials --resource-group $rgName --name $clusterName --overwrite-existing
-    Write-Success "kubectl context set to: $clusterName"
+    if ($TARGET -eq "aks") {
+        # ── Get AKS credentials ───────────────────────────────────────────────────
+        Write-Step "Getting AKS credentials..."
+        $rgName = terraform -chdir="$tfDir" output -raw resource_group_name
+        $clusterName = terraform -chdir="$tfDir" output -raw cluster_name
+        az aks get-credentials --resource-group $rgName --name $clusterName --overwrite-existing
+        Write-Success "kubectl context set to: $clusterName"
+    }
 
+    if ($TARGET -eq "civo") {
+        # ── Get Civo credentials ───────────────────────────────────────────────────
+        Write-Step "Getting Civo cluster credentials..."
+        $clusterName = terraform -chdir="$tfDir" output -raw cluster_name
+        $region = terraform -chdir="$tfDir" output -raw region
+        civo kubernetes config $clusterName --region $region --save
+        Write-Success "kubectl context set to: $clusterName"
+    }
     # ── Configure auto-stop schedule ─────────────────────────────────────────
-    Write-Header "Configuring AKS Auto-Stop Schedule"
-    Install-AutoStopSchedule -resourceGroup $rgName -clusterName $clusterName
+    #Write-Header "Configuring AKS Auto-Stop Schedule"
+    #Install-AutoStopSchedule -resourceGroup $rgName -clusterName $clusterName
 
     # ── Update config.yaml ────────────────────────────────────────────────────
-    Update-ConfigTarget "aks"
+    Update-ConfigTarget $TARGET
 
     # ── Install platform components ───────────────────────────────────────────
-    Install-PlatformComponents -target "aks"
+    Install-PlatformComponents -target $TARGET
 }
 
 # =============================================================================
@@ -332,7 +378,8 @@ function Install-AutoStopSchedule {
     # Extract timezone
     if ($configContent -match "timezone:\s*'([^']+)'") {
         $timezone = $Matches[1]
-    } else {
+    }
+    else {
         $timezone = "UTC"
         Write-Warn "No timezone found in config.yaml — defaulting to UTC"
     }
@@ -409,10 +456,10 @@ Start-AzAksCluster -ResourceGroupName '$resourceGroup' -Name '$clusterName'
 
     # Weekday schedules (Mon-Fri)
     # Stop at 19:00, Start at 08:00
-    $days = @("Monday","Tuesday","Wednesday","Thursday","Friday")
+    $days = @("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
 
     foreach ($day in $days) {
-        $stopScheduleName  = "Stop-$day"
+        $stopScheduleName = "Stop-$day"
         $startScheduleName = "Start-$day"
 
         az automation schedule create `
@@ -496,6 +543,35 @@ function Install-PlatformComponents {
     Write-Success "ArgoCD admin password: $argoPass"
     Write-Info "Save this — it will not be shown again"
 
+    # ── Start port-forward BEFORE API calls ───────────────────────────────────
+    Write-Header "Starting ArgoCD Port-Forward"
+    Write-Step "Starting ArgoCD port-forward on http://localhost:8080 ..."
+
+    $portForwardJob = Start-Job -ScriptBlock {
+        kubectl port-forward svc/argocd-server -n argocd 8080:80
+    }
+
+    Write-Step "Waiting for port-forward to be ready..."
+    $pfReady = $false
+    $pfAttempts = 0
+    while (-not $pfReady -and $pfAttempts -lt 10) {
+        Start-Sleep -Seconds 2
+        try {
+            $null = Invoke-RestMethod -Uri "http://localhost:8080/healthz" -Method GET -ErrorAction Stop
+            $pfReady = $true
+        } catch {
+            $pfAttempts++
+        }
+    }
+
+    if (-not $pfReady) {
+        Write-Warn "Port-forward not responding — run manually before continuing:"
+        Write-Info "kubectl port-forward svc/argocd-server -n argocd 8080:80"
+        exit 1
+    }
+
+    Write-Success "ArgoCD port-forward ready (Job ID: $($portForwardJob.Id))"
+
     # ── ArgoCD API Token (permanent) ─────────────────────────────────────────
     Write-Header "Configuring ArgoCD API Access"
 
@@ -520,19 +596,19 @@ function Install-PlatformComponents {
     # Step 4 — get admin session token
     Write-Step "Getting ArgoCD admin session token..."
     $adminToken = (Invoke-RestMethod `
-        -Uri "http://localhost:8080/api/v1/session" `
-        -Method POST `
-        -ContentType "application/json" `
-        -Body "{`"username`":`"admin`",`"password`":`"$argoPass`"}").token
+            -Uri "http://localhost:8080/api/v1/session" `
+            -Method POST `
+            -ContentType "application/json" `
+            -Body "{`"username`":`"admin`",`"password`":`"$argoPass`"}").token
 
     # Step 5 — generate permanent token for secops-backend
     Write-Step "Generating permanent API token for secops-backend..."
     $apiToken = (Invoke-RestMethod `
-        -Uri "http://localhost:8080/api/v1/account/secops-backend/token" `
-        -Method POST `
-        -Headers @{Authorization="Bearer $adminToken"} `
-        -ContentType "application/json" `
-        -Body "{}").token
+            -Uri "http://localhost:8080/api/v1/account/secops-backend/token" `
+            -Method POST `
+            -Headers @{Authorization = "Bearer $adminToken" } `
+            -ContentType "application/json" `
+            -Body "{}").token
 
     # Step 6 — store as Kubernetes secret
     Write-Step "Storing ArgoCD API token as Kubernetes secret..."
@@ -601,12 +677,14 @@ function Install-PlatformComponents {
     Invoke-Kubectl @("apply", "-f", "$PSScriptRoot\..\gitops\apps\", "-n", "argocd")
     Write-Success "GitOps manifests applied"
 
-   # ── Summary ───────────────────────────────────────────────────────────────
+    # ── Summary ───────────────────────────────────────────────────────────────
     Write-Header "Setup Complete"
  
     if ($target -eq "k3s") {
         $frontendUrl = "http://localhost:30080"
-    } else {
+    }
+    else {
+        # AKS and Civo both use LoadBalancer IP
         Write-Step "Getting frontend IP (may take 1-2 min for LoadBalancer)..."
         $ip = ""
         $attempts = 0
@@ -619,22 +697,6 @@ function Install-PlatformComponents {
         $frontendUrl = if ($ip) { "http://$ip" } else { "http://<pending — check: kubectl get svc -n $NAMESPACE>" }
     }
  
-    # ── Start ArgoCD port-forward in background ───────────────────────────────
-    Write-Header "Starting ArgoCD Port-Forward"
-    Write-Step "Starting ArgoCD port-forward on http://localhost:8080 ..."
- 
-    $portForwardJob = Start-Job -ScriptBlock {
-        kubectl port-forward svc/argocd-server -n argocd 8080:80
-    }
- 
-    Start-Sleep -Seconds 3
- 
-    if ($portForwardJob.State -eq "Running") {
-        Write-Success "ArgoCD port-forward running (Job ID: $($portForwardJob.Id))"
-    } else {
-        Write-Warn "Port-forward may have failed — run manually:"
-        Write-Info "kubectl port-forward svc/argocd-server -n argocd 8080:80"
-    }
  
     Write-Host ""
     Write-Host "  +-------------------------------------------------+" -ForegroundColor Cyan
@@ -674,6 +736,7 @@ function Update-ConfigTarget {
 
 if ($TARGET -eq "k3s") {
     Install-LocalCluster
-} else {
+}
+else {
     Install-CloudCluster
 }
