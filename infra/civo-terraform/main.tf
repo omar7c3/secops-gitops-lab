@@ -53,7 +53,7 @@ resource "civo_firewall" "lab" {
     label      = "kubernetes-api"
     protocol   = "tcp"
     port_range = "6443"
-    cidr       = ["76.34.90.144/32"]
+    cidr       = ["0.0.0.0/0"]
     action     = "allow"
   }
 }
