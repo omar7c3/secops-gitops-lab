@@ -272,19 +272,10 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+      - ipBlock:
+          cidr: 10.43.0.1/32
       ports:
         - port: 443
-        - port: 6443
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: default
-      ports:
-        - port: 443
-        - port: 6443
     - to:
         - ipBlock:
             cidr: 172.18.0.0/16
