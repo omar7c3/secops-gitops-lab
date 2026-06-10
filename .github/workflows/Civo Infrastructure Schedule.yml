@@ -216,10 +216,23 @@ jobs:
           kubectl config use-context ${{ steps.cluster-info.outputs.cluster_name }}
           kubectl get nodes
 
+      - name: Disable ArgoCD auto-sync
+        run: |
+          echo "[$(date)] Disabling ArgoCD auto-sync to prevent PVC recreation..."
+          # Get all ArgoCD apps
+          APPS=$(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}')
+          for APP in $APPS; do
+            echo "Disabling auto-sync for: $APP"
+            kubectl patch application "$APP" -n argocd \
+              --type=merge \
+              -p '{"spec":{"syncPolicy":null}}' || true
+          done
+          echo "[$(date)] Auto-sync disabled for all apps"
+
       - name: Delete PVCs and PVs across all namespaces
         run: |
           echo "[$(date)] Deleting all PVCs..."
-          
+
           kubectl delete pvc --all --all-namespaces --timeout=120s || true
           echo "[$(date)] Removing finalizers from stuck PVCs..."
           kubectl get pvc --all-namespaces -o json | \
