@@ -30,6 +30,8 @@ env:
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_civo_token: ${{ secrets.CIVO_TOKEN }}
+  CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
@@ -104,21 +106,15 @@ jobs:
 
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: terraform apply -auto-approve tfplan
 
       - name: Get cluster details from Terraform outputs
         id: cluster-info
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           REGION=$(terraform output -raw region)
@@ -127,15 +123,11 @@ jobs:
           echo "Cluster: $CLUSTER_NAME | Region: $REGION"
 
       - name: Authenticate Civo CLI
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           civo apikey save default ${{ secrets.CIVO_TOKEN }}
           civo apikey use default
 
       - name: Get kubeconfig and store in Azure Storage
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           echo "[$(date)] Fetching kubeconfig..."
           civo kubernetes config ${{ steps.cluster-info.outputs.cluster_name }} \
@@ -165,8 +157,6 @@ jobs:
 
       - name: Show Terraform outputs
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: terraform output
 
   # ── Step 3: Terraform destroy — cleanup PVCs first then destroy ───────────────
@@ -206,8 +196,6 @@ jobs:
       - name: Get cluster details from Terraform outputs
         id: cluster-info
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           REGION=$(terraform output -raw region)
@@ -216,15 +204,11 @@ jobs:
           echo "Cluster: $CLUSTER_NAME | Region: $REGION"
 
       - name: Authenticate Civo CLI
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           civo apikey save default ${{ secrets.CIVO_TOKEN }}
           civo apikey use default
 
       - name: Get kubeconfig
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           civo kubernetes config ${{ steps.cluster-info.outputs.cluster_name }} \
             --region ${{ steps.cluster-info.outputs.region }} > kubeconfig.yaml
@@ -242,8 +226,6 @@ jobs:
           kubectl delete pv --all --timeout=120s || true
 
       - name: Wait for Civo volumes to be fully released
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: |
           REGION="${{ steps.cluster-info.outputs.region }}"
           MAX_ATTEMPTS=20
@@ -277,14 +259,10 @@ jobs:
 
       - name: Terraform Plan Destroy
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: terraform plan -destroy -out=tfplan
 
       - name: Terraform Destroy
         working-directory: ${{ env.TF_DIR }}
-        env:
-          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
         run: terraform apply -auto-approve tfplan
 
       - name: Remove kubeconfig from Azure Storage
