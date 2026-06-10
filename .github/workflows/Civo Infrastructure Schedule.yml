@@ -229,37 +229,28 @@ jobs:
           done
           echo "[$(date)] Auto-sync disabled for all apps"
 
-      - name: Delete PVCs and PVs across all namespaces
+      - name: Delete secops-backend deployment and PVC
         run: |
-          echo "[$(date)] Deleting all PVCs..."
+          echo "[$(date)] Deleting secops-backend deployment..."
+          kubectl delete deployment secops-backend \
+            -n secops-lab --timeout=60s || true
 
-          kubectl delete pvc --all --all-namespaces --timeout=120s || true
-          echo "[$(date)] Removing finalizers from stuck PVCs..."
-          kubectl get pvc --all-namespaces -o json | \
-            jq -r '.items[] | select(.metadata.finalizers != null) | 
-              .metadata.namespace + " " + .metadata.name' | \
-            while read -r NS NAME; do
-              echo "Removing finalizer from PVC: $NS/$NAME"
-              kubectl patch pvc "$NAME" -n "$NS" \
-                -p '{"metadata":{"finalizers":[]}}' \
-                --type=merge || true
-            done
+          echo "[$(date)] Waiting for pods to terminate..."
+          kubectl wait --for=delete pod \
+            -l app=secops-backend \
+            -n secops-lab \
+            --timeout=60s || true
 
-          echo "[$(date)] Deleting all PVs..."
-          kubectl delete pv --all --timeout=120s || true
+          echo "[$(date)] Deleting backend-data-pvc..."
+          kubectl delete pvc backend-data-pvc \
+            -n secops-lab --timeout=60s || true
 
-          echo "[$(date)] Removing finalizers from stuck PVs..."
-          kubectl get pv -o json | \
-            jq -r '.items[] | select(.metadata.finalizers != null) | 
-              .metadata.name' | \
-            while read -r NAME; do
-              echo "Removing finalizer from PV: $NAME"
-              kubectl patch pv "$NAME" \
-                -p '{"metadata":{"finalizers":[]}}' \
-                --type=merge || true
-            done
+          echo "[$(date)] Removing finalizer if stuck..."
+          kubectl patch pvc backend-data-pvc -n secops-lab \
+            -p '{"metadata":{"finalizers":[]}}' \
+            --type=merge || true
 
-          echo "[$(date)] PVC/PV cleanup complete"
+          echo "[$(date)] PVC deletion complete"
 
       - name: Wait for Civo volumes to be fully released
         run: |
