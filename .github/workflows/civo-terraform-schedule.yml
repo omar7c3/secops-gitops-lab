@@ -22,6 +22,7 @@ permissions:
   contents: read
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
   TF_DIR: infra/civo-terraform
   ARM_USE_OIDC: "true"
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -71,7 +72,7 @@ jobs:
       needs.determine-action.outputs.is_workday == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3.1.2
@@ -176,7 +177,7 @@ jobs:
       needs.determine-action.outputs.is_workday == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3.1.2
