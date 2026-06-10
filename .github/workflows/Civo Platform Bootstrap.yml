@@ -1,4 +1,4 @@
-name: Civo Platform Install
+name: Civo Platform Bootstrap
 
 on:
   workflow_run:

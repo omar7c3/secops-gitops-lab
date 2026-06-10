@@ -1,4 +1,4 @@
-name: Civo Terraform Schedule
+name: Civo Infrastructure Schedule
 
 on:
   schedule:
@@ -219,10 +219,34 @@ jobs:
       - name: Delete PVCs and PVs across all namespaces
         run: |
           echo "[$(date)] Deleting all PVCs..."
+          
           kubectl delete pvc --all --all-namespaces --timeout=120s || true
+          echo "[$(date)] Removing finalizers from stuck PVCs..."
+          kubectl get pvc --all-namespaces -o json | \
+            jq -r '.items[] | select(.metadata.finalizers != null) | 
+              .metadata.namespace + " " + .metadata.name' | \
+            while read -r NS NAME; do
+              echo "Removing finalizer from PVC: $NS/$NAME"
+              kubectl patch pvc "$NAME" -n "$NS" \
+                -p '{"metadata":{"finalizers":[]}}' \
+                --type=merge || true
+            done
 
           echo "[$(date)] Deleting all PVs..."
           kubectl delete pv --all --timeout=120s || true
+
+          echo "[$(date)] Removing finalizers from stuck PVs..."
+          kubectl get pv -o json | \
+            jq -r '.items[] | select(.metadata.finalizers != null) | 
+              .metadata.name' | \
+            while read -r NAME; do
+              echo "Removing finalizer from PV: $NAME"
+              kubectl patch pv "$NAME" \
+                -p '{"metadata":{"finalizers":[]}}' \
+                --type=merge || true
+            done
+
+          echo "[$(date)] PVC/PV cleanup complete"
 
       - name: Wait for Civo volumes to be fully released
         run: |
