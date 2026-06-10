@@ -42,7 +42,6 @@ jobs:
       - name: Install Civo CLI
         run: |
           curl -sL https://civo.com/get | sh
-          sudo mv civo /usr/local/bin/
           civo version
 
       - name: Install kubectl
