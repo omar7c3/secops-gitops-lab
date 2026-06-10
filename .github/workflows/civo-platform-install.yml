@@ -173,6 +173,10 @@ jobs:
             echo "Attempt $i/10 — waiting..."
             sleep 3
           done
+          if ! curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+            echo "ArgoCD port-forward failed to become ready"
+            exit 1
+          fi
 
       # ── ArgoCD API token ──────────────────────────────────────────────────────
       - name: Configure ArgoCD API access
