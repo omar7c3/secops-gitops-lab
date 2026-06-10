@@ -136,7 +136,7 @@ jobs:
           echo "[$(date)] Uploading kubeconfig to Azure Storage..."
           az storage blob upload \
             --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
-            --container-name tfstate \
+            --container-name ${{ secrets.CONTAINER_NAME }} \
             --name civo-kubeconfig.yaml \
             --file kubeconfig.yaml \
             --overwrite \
@@ -270,7 +270,7 @@ jobs:
           echo "[$(date)] Removing kubeconfig from Azure Storage..."
           az storage blob delete \
             --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
-            --container-name tfstate \
+            --container-name ${{ secrets.CONTAINER_NAME }} \
             --name civo-kubeconfig.yaml \
             --auth-mode login || true
           echo "[$(date)] Kubeconfig removed"
