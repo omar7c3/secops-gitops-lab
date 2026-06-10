@@ -226,14 +226,17 @@ jobs:
 
       - name: Wait for Civo volumes to be fully released
         run: |
-          REGION="${{ steps.cluster-info.outputs.region }}"
+          REGION="NYC1"
           MAX_ATTEMPTS=20
           ATTEMPT=0
 
           while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
             ATTEMPT=$((ATTEMPT + 1))
 
-            VOLUME_COUNT=$(civo volume list --region "$REGION" -o json 2>/dev/null | jq 'length' || echo "0")
+            VOLUME_JSON=$(civo volume list --region "$REGION" -o json 2>/dev/null || echo "[]")
+            VOLUME_COUNT=$(echo "$VOLUME_JSON" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo "0")
+            VOLUME_COUNT=${VOLUME_COUNT:-0}
+
             echo "[$(date)] Attempt $ATTEMPT/$MAX_ATTEMPTS — Civo volumes remaining: $VOLUME_COUNT"
 
             if [ "$VOLUME_COUNT" -eq 0 ]; then
@@ -243,8 +246,7 @@ jobs:
 
             if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
               echo "[$(date)] Max attempts reached — force deleting remaining volumes..."
-              civo volume list --region "$REGION" -o json | \
-                jq -r '.[].id' | \
+              echo "$VOLUME_JSON" | jq -r '.[].id' | \
                 while read -r VOL_ID; do
                   echo "Force deleting volume: $VOL_ID"
                   civo volume delete "$VOL_ID" --region "$REGION" --yes || true
