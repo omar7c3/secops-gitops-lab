@@ -1,0 +1,296 @@
+name: Civo Terraform Schedule
+
+on:
+  schedule:
+    - cron: '0 12 * * 1-5'   # 8AM EDT (UTC-4, summer) — Apply
+    - cron: '0 13 * * 1-5'   # 8AM EST (UTC-5, winter) — Apply
+    - cron: '0 21 * * 1-5'   # 5PM EDT (UTC-4, summer) — Destroy
+    - cron: '0 22 * * 1-5'   # 5PM EST (UTC-5, winter) — Destroy
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+env:
+  TF_DIR: infra/civo-terraform
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── Step 1: Determine apply or destroy ───────────────────────────────────────
+  determine-action:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.set-action.outputs.action }}
+      is_workday: ${{ steps.set-action.outputs.is_workday }}
+    steps:
+      - name: Determine action and verify workday window
+        id: set-action
+        run: |
+          ET_HOUR=$(TZ="America/New_York" date +"%H")
+          ET_DAY=$(TZ="America/New_York" date +"%u")  # 1=Mon 7=Sun
+
+          if [ "$ET_DAY" -ge 1 ] && [ "$ET_DAY" -le 5 ]; then
+            echo "is_workday=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_workday=false" >> $GITHUB_OUTPUT
+            echo "Not a workday — skipping"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          else
+            if [ "$ET_HOUR" == "08" ]; then
+              echo "action=apply" >> $GITHUB_OUTPUT
+            else
+              echo "action=destroy" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  # ── Step 2: Terraform apply — provision Civo cluster ─────────────────────────
+  terraform-apply:
+    runs-on: ubuntu-latest
+    needs: determine-action
+    if: |
+      needs.determine-action.outputs.action == 'apply' &&
+      needs.determine-action.outputs.is_workday == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install Civo CLI
+        run: |
+          curl -sL https://civo.com/get | sh
+          sudo mv civo /usr/local/bin/
+          civo version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Azure Login (OIDC — for tfstate backend)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get cluster details from Terraform outputs
+        id: cluster-info
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          REGION=$(terraform output -raw region)
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "Cluster: $CLUSTER_NAME | Region: $REGION"
+
+      - name: Authenticate Civo CLI
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo apikey save default ${{ secrets.CIVO_TOKEN }}
+          civo apikey use default
+
+      - name: Get kubeconfig and store in Azure Storage
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          echo "[$(date)] Fetching kubeconfig..."
+          civo kubernetes config ${{ steps.cluster-info.outputs.cluster_name }} \
+            --region ${{ steps.cluster-info.outputs.region }} > kubeconfig.yaml
+
+          echo "[$(date)] Uploading kubeconfig to Azure Storage..."
+          az storage blob upload \
+            --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+            --container-name tfstate \
+            --name civo-kubeconfig.yaml \
+            --file kubeconfig.yaml \
+            --overwrite \
+            --auth-mode login
+
+          echo "[$(date)] Kubeconfig stored in Azure Storage (tfstate/civo-kubeconfig.yaml)"
+
+          # Merge for use in remaining steps
+          mkdir -p ~/.kube
+          cp kubeconfig.yaml ~/.kube/config
+          kubectl config use-context ${{ steps.cluster-info.outputs.cluster_name }}
+
+      - name: Verify cluster is reachable
+        run: |
+          echo "[$(date)] Verifying cluster connectivity..."
+          kubectl get nodes
+          kubectl cluster-info
+
+      - name: Show Terraform outputs
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: terraform output
+
+  # ── Step 3: Terraform destroy — cleanup PVCs first then destroy ───────────────
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    needs: determine-action
+    if: |
+      needs.determine-action.outputs.action == 'destroy' &&
+      needs.determine-action.outputs.is_workday == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install Civo CLI
+        run: |
+          curl -sL https://civo.com/get | sh
+          sudo mv civo /usr/local/bin/
+          civo version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Azure Login (OIDC — for tfstate backend)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init
+
+      - name: Get cluster details from Terraform outputs
+        id: cluster-info
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          REGION=$(terraform output -raw region)
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "Cluster: $CLUSTER_NAME | Region: $REGION"
+
+      - name: Authenticate Civo CLI
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo apikey save default ${{ secrets.CIVO_TOKEN }}
+          civo apikey use default
+
+      - name: Get kubeconfig
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo kubernetes config ${{ steps.cluster-info.outputs.cluster_name }} \
+            --region ${{ steps.cluster-info.outputs.region }} > kubeconfig.yaml
+          mkdir -p ~/.kube
+          cp kubeconfig.yaml ~/.kube/config
+          kubectl config use-context ${{ steps.cluster-info.outputs.cluster_name }}
+          kubectl get nodes
+
+      - name: Delete PVCs and PVs across all namespaces
+        run: |
+          echo "[$(date)] Deleting all PVCs..."
+          kubectl delete pvc --all --all-namespaces --timeout=120s || true
+
+          echo "[$(date)] Deleting all PVs..."
+          kubectl delete pv --all --timeout=120s || true
+
+      - name: Wait for Civo volumes to be fully released
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          REGION="${{ steps.cluster-info.outputs.region }}"
+          MAX_ATTEMPTS=20
+          ATTEMPT=0
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+
+            VOLUME_COUNT=$(civo volume list --region "$REGION" -o json 2>/dev/null | jq 'length' || echo "0")
+            echo "[$(date)] Attempt $ATTEMPT/$MAX_ATTEMPTS — Civo volumes remaining: $VOLUME_COUNT"
+
+            if [ "$VOLUME_COUNT" -eq 0 ]; then
+              echo "[$(date)] All volumes released — safe to destroy"
+              break
+            fi
+
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "[$(date)] Max attempts reached — force deleting remaining volumes..."
+              civo volume list --region "$REGION" -o json | \
+                jq -r '.[].id' | \
+                while read -r VOL_ID; do
+                  echo "Force deleting volume: $VOL_ID"
+                  civo volume delete "$VOL_ID" --region "$REGION" --yes || true
+                done
+              echo "[$(date)] Waiting 15s after force delete..."
+              sleep 15
+            else
+              sleep 15
+            fi
+          done
+
+      - name: Terraform Plan Destroy
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: terraform plan -destroy -out=tfplan
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Remove kubeconfig from Azure Storage
+        run: |
+          echo "[$(date)] Removing kubeconfig from Azure Storage..."
+          az storage blob delete \
+            --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+            --container-name tfstate \
+            --name civo-kubeconfig.yaml \
+            --auth-mode login || true
+          echo "[$(date)] Kubeconfig removed"

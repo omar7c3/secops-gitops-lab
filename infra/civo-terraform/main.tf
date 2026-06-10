@@ -87,21 +87,3 @@ resource "civo_kubernetes_cluster" "lab" {
   applications = "metrics-server"
 }
 
-# ── Auto-stop (delete) / Auto-start (recreate) via Civo CLI ──────────────────
-# Civo has no "pause" API. The equivalent of AKS Stop/Start is delete + recreate,
-# which is safe because kubeconfig and DNS update automatically on recreate.
-#
-# This block renders cron-ready shell scripts you can drop into a scheduler
-# (crontab, GitHub Actions scheduled workflow, etc.).
-# They are NOT executed by Terraform itself — just written to disk.
-resource "local_file" "stop_script" {
-  count    = local.autostop_enabled ? 1 : 0
-  filename = "${path.module}/scripts/stop-cluster.sh"
-  content  = local.stop_script
-}
-
-resource "local_file" "start_script" {
-  count    = local.autostop_enabled ? 1 : 0
-  filename = "${path.module}/scripts/start-cluster.sh"
-  content  = local.start_script
-}

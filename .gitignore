@@ -57,7 +57,7 @@ config.local.yaml
 .claudeignore
 *.claude-cache
 *.claude-temp
-.*CLAUDE.md
+**/CLAUDE.md
 *.terraform*
 # Claude AI project intelligence
 

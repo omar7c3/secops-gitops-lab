@@ -209,7 +209,7 @@ function Install-LocalCluster {
 
     if (-not (k3d cluster list --no-headers 2>&1 | Select-String "secops-lab")) {
         Write-Step "Creating k3s cluster (2 nodes)..."
-        k3d cluster create secops-lab `
+        k3d cluster create secops-gitops-lab `
             --agents 2 `
             --port "30080:80@loadbalancer" `
             --port "30443:443@loadbalancer" `
@@ -223,9 +223,9 @@ function Install-LocalCluster {
     }
 
     # ── kubectl context ───────────────────────────────────────────────────────
-    Write-Step "Switching kubectl context to k3d-secops-lab..."
-    kubectl config use-context k3d-secops-lab
-    Write-Success "kubectl context: k3d-secops-lab"
+    Write-Step "Switching kubectl context to k3d-secops-gitops-lab..."
+    kubectl config use-context k3d-secops-gitops-lab
+    Write-Success "kubectl context: k3d-secops-gitops-lab"
 
     # ── Update config.yaml ────────────────────────────────────────────────────
     Update-ConfigTarget "k3s"
@@ -543,6 +543,26 @@ function Install-PlatformComponents {
     Write-Success "ArgoCD admin password: $argoPass"
     Write-Info "Save this — it will not be shown again"
 
+    
+    # ── Waiting for secops-backend deployment ────────────────────────────────────────────────────────────────
+    Write-Step "Waiting for secops-backend deployment to exist..."
+    $maxAttempts = 30
+    $attempt = 0
+    while ($attempt -lt $maxAttempts) {
+        $exists = kubectl get deploy secops-backend -n $NAMESPACE --ignore-not-found
+        if ($exists) {
+            Write-Success "Deployment found!"
+            break
+        }
+        Start-Sleep -Seconds 3
+        $attempt++
+    }
+
+    if (-not $exists) {
+        Write-Warn "Deployment did not appear in time."
+        exit 1
+    }
+    
     # ── Start port-forward BEFORE API calls ───────────────────────────────────
     Write-Header "Starting ArgoCD Port-Forward"
     Write-Step "Starting ArgoCD port-forward on http://localhost:8080 ..."
@@ -559,7 +579,8 @@ function Install-PlatformComponents {
         try {
             $null = Invoke-RestMethod -Uri "http://localhost:8080/healthz" -Method GET -ErrorAction Stop
             $pfReady = $true
-        } catch {
+        }
+        catch {
             $pfAttempts++
         }
     }

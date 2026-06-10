@@ -1,0 +1,282 @@
+name: Civo Platform Install
+
+on:
+  workflow_run:
+    workflows: ["Civo Terraform Schedule"]
+    types: [completed]
+  workflow_dispatch:   # manual trigger for re-installs
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+env:
+  TF_DIR: infra/civo-terraform
+  NAMESPACE: secops-lab
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  install-platform:
+    runs-on: ubuntu-latest
+    # Only run when triggered by workflow_run if the terraform workflow succeeded
+    # Always run on manual workflow_dispatch
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install Civo CLI
+        run: |
+          curl -sL https://civo.com/get | sh
+          sudo mv civo /usr/local/bin/
+          civo version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (to read outputs)
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init
+
+      - name: Get cluster details from Terraform outputs
+        id: cluster-info
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          REGION=$(terraform output -raw region)
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "Cluster: $CLUSTER_NAME | Region: $REGION"
+
+      - name: Authenticate Civo CLI
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo apikey save default ${{ secrets.CIVO_TOKEN }}
+          civo apikey use default
+
+      - name: Check if cluster exists
+        id: check-cluster
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          if civo kubernetes show ${{ steps.cluster-info.outputs.cluster_name }} \
+              --region ${{ steps.cluster-info.outputs.region }} -o json > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Cluster exists — proceeding with platform install"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Cluster not found — skipping platform install (destroy workflow ran)"
+          fi
+
+      - name: Get kubeconfig
+        if: steps.check-cluster.outputs.exists == 'true'
+        env:
+          CIVO_TOKEN: ${{ secrets.CIVO_TOKEN }}
+        run: |
+          civo kubernetes config ${{ steps.cluster-info.outputs.cluster_name }} \
+            --region ${{ steps.cluster-info.outputs.region }} > kubeconfig.yaml
+          mkdir -p ~/.kube
+          cp kubeconfig.yaml ~/.kube/config
+          kubectl config use-context ${{ steps.cluster-info.outputs.cluster_name }}
+
+      - name: Verify cluster connectivity
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          kubectl get nodes
+          kubectl cluster-info
+
+      # ── Namespace ────────────────────────────────────────────────────────────
+      - name: Create namespace
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace ${{ env.NAMESPACE }} ready"
+
+      # ── Backend secrets ──────────────────────────────────────────────────────
+      - name: Create backend secrets
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          kubectl create secret generic backend-secrets \
+            --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
+            --from-literal=admin-password="${{ secrets.ADMIN_PASSWORD }}" \
+            -n ${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Backend secrets created"
+
+      # ── ArgoCD ───────────────────────────────────────────────────────────────
+      - name: Add Helm repos
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm repo add argo https://argoproj.github.io/argo-helm --force-update
+          helm repo add kyverno https://kyverno.github.io/kyverno --force-update
+          helm repo add falcosecurity https://falcosecurity.github.io/charts --force-update
+          helm repo update
+
+      - name: Install ArgoCD
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --create-namespace \
+            --set dex.enabled=false \
+            --set applicationSet.enabled=false \
+            --set "configs.params.server\.insecure=true" \
+            --wait \
+            --timeout 5m
+          echo "ArgoCD installed"
+
+      - name: Get ArgoCD admin password
+        if: steps.check-cluster.outputs.exists == 'true'
+        id: argocd-pass
+        run: |
+          ARGO_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+          echo "::add-mask::$ARGO_PASS"
+          echo "password=$ARGO_PASS" >> $GITHUB_OUTPUT
+          echo "ArgoCD admin password retrieved"
+
+      # ── ArgoCD port-forward for API calls ────────────────────────────────────
+      - name: Start ArgoCD port-forward
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          kubectl port-forward svc/argocd-server -n argocd 8080:80 &
+          echo "Waiting for port-forward to be ready..."
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+              echo "Port-forward ready"
+              break
+            fi
+            echo "Attempt $i/10 — waiting..."
+            sleep 3
+          done
+
+      # ── ArgoCD API token ──────────────────────────────────────────────────────
+      - name: Configure ArgoCD API access
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          # Add secops-backend account
+          kubectl patch configmap argocd-cm -n argocd --type=merge \
+            -p '{"data":{"accounts.secops-backend":"apiKey"}}'
+
+          # Set RBAC permissions
+          kubectl patch configmap argocd-rbac-cm -n argocd --type=merge \
+            -p '{"data":{"policy.csv":"p, secops-backend, applications, get, */*, allow\np, secops-backend, applications, sync, */*, allow\n"}}'
+
+          echo "Waiting for ArgoCD to reload config..."
+          sleep 10
+
+          # Get admin session token
+          ADMIN_TOKEN=$(curl -sf -X POST http://localhost:8080/api/v1/session \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"admin\",\"password\":\"${{ steps.argocd-pass.outputs.password }}\"}" \
+            | jq -r '.token')
+
+          # Generate permanent API token for secops-backend
+          API_TOKEN=$(curl -sf -X POST http://localhost:8080/api/v1/account/secops-backend/token \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            | jq -r '.token')
+
+          # Store as Kubernetes secret
+          kubectl create secret generic argocd-api-token \
+            --from-literal=token="$API_TOKEN" \
+            -n ${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Inject into backend deployment
+          kubectl set env deployment/secops-backend \
+            -n ${{ env.NAMESPACE }} \
+            ARGOCD_TOKEN="$API_TOKEN" || true
+
+          echo "ArgoCD API token configured"
+
+      # ── Kyverno ──────────────────────────────────────────────────────────────
+      - name: Install Kyverno
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm upgrade --install kyverno kyverno/kyverno \
+            --namespace kyverno \
+            --create-namespace \
+            --set replicaCount=1 \
+            --set admissionController.replicas=1 \
+            --wait \
+            --timeout 5m
+          echo "Kyverno installed"
+
+      # ── Falco ────────────────────────────────────────────────────────────────
+      - name: Install Falco
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm upgrade --install falco falcosecurity/falco \
+            --namespace falco \
+            --create-namespace \
+            --set driver.kind=auto \
+            --set falcosidekick.enabled=true \
+            --set "falcosidekick.config.webhook.address=http://secops-backend.${{ env.NAMESPACE }}.svc.cluster.local:3000/events/falco" \
+            --set falcosidekick.config.webhook.checkcert=false \
+            --wait \
+            --timeout 5m
+          echo "Falco installed"
+
+      # ── GitOps manifests ──────────────────────────────────────────────────────
+      - name: Apply GitOps manifests
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          echo "Applying Kyverno policies..."
+          kubectl apply -f gitops/policies/ -n ${{ env.NAMESPACE }}
+
+          echo "Applying base workloads..."
+          kubectl apply -f gitops/base/ -n ${{ env.NAMESPACE }}
+
+          echo "Registering ArgoCD applications..."
+          kubectl apply -f gitops/apps/ -n argocd
+
+          echo "GitOps manifests applied"
+
+      # ── Summary ───────────────────────────────────────────────────────────────
+      - name: Print summary
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          echo ""
+          echo "================================================="
+          echo "  SecOps GitOps Lab — Platform Install Complete  "
+          echo "================================================="
+          echo ""
+          echo "  Cluster:      ${{ steps.cluster-info.outputs.cluster_name }}"
+          echo "  Namespace:    ${{ env.NAMESPACE }}"
+          echo "  ArgoCD:       http://localhost:8080 (port-forward)"
+          echo "  ArgoCD user:  admin"
+          echo ""
+          echo "  Download kubeconfig:"
+          echo "  az storage blob download \\"
+          echo "    --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \\"
+          echo "    --container-name tfstate \\"
+          echo "    --name civo-kubeconfig.yaml \\"
+          echo "    --file ~/.kube/civo-kubeconfig.yaml \\"
+          echo "    --auth-mode login"
+          echo ""
+          echo "================================================="
