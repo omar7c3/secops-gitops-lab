@@ -47,9 +47,9 @@ Write-Host "  Interactive setup for local k3s or Azure AKS deployment.`n" -Foreg
 # ── Target selection ─────────────────────────────────────────────────────────
 Write-Header "Deployment Target"
 Write-Host ""
-Write-Host "  [1] Local   — k3s via k3d (Docker Desktop + WSL2, zero cost)" -ForegroundColor White
-Write-Host "  [2] Cloud   — Azure AKS   (Terraform, ~`$8-10/mo with auto-stop)" -ForegroundColor White
-Write-Host "  [3] Cloud   — Civo Kubernetes   (Terraform, ~`$8-10/mo with auto-stop)" -ForegroundColor White
+Write-Host "  [1] Local — k3s via k3d (Docker Desktop + WSL2, zero cost)" -ForegroundColor White
+Write-Host "  [2] Cloud — Azure AKS (Terraform, ~`$14-15/mo with auto-stop)" -ForegroundColor White
+Write-Host "  [3] Cloud — Civo Kubernetes (Terraform, ~`$6-7/mo · engineered auto-stop — no native equivalent)" -ForegroundColor White
 Write-Host ""
 
 do {

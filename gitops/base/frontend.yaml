@@ -70,7 +70,7 @@ metadata:
 spec:
   selector:
     app: secops-frontend
-  type: LoadBalancer    # patched to NodePort by setup.ps1 for k3s
+  type: LoadBalancer
   ports:
     - port: 80
       targetPort: 80

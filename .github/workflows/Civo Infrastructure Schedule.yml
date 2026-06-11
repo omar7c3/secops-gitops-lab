@@ -1,11 +1,11 @@
 name: Civo Infrastructure Schedule
 
 on:
-  schedule:
-    - cron: '0 12 * * 1-5'   # 8AM EDT (UTC-4, summer) — Apply
-    - cron: '0 13 * * 1-5'   # 8AM EST (UTC-5, winter) — Apply
-    - cron: '0 21 * * 1-5'   # 5PM EDT (UTC-4, summer) — Destroy
-    - cron: '0 22 * * 1-5'   # 5PM EST (UTC-5, winter) — Destroy
+#  schedule:
+#    - cron: '0 12 * * 1-5'   # 8AM EDT (UTC-4, summer) — Apply
+#    - cron: '0 13 * * 1-5'   # 8AM EST (UTC-5, winter) — Apply
+#    - cron: '0 21 * * 1-5'   # 5PM EDT (UTC-4, summer) — Destroy
+#    - cron: '0 22 * * 1-5'   # 5PM EST (UTC-5, winter) — Destroy
   workflow_dispatch:
     inputs:
       action:
