@@ -349,9 +349,9 @@ jobs:
             "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/dns_records/${{ secrets.CF_RECORD_ID }}" \
             -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"A\",\"name\":\"${{ secrets.CF_DOMAIN }}\",\"content\":\"$IP\",\"ttl\":60,\"proxied\":true}"
+            -d "{\"type\":\"A\",\"name\":\"${{ secrets.CF_RECORD_NAME }}\",\"content\":\"$IP\",\"ttl\":60,\"proxied\":true}"
 
-          echo "[$(date)] DNS updated — ${{ secrets.CF_DOMAIN }} → $IP"
+          echo "[$(date)] DNS updated — ${{ secrets.CF_RECORD_NAME }} → $IP"
 
       # ── Summary ───────────────────────────────────────────────────────────────
       - name: Print summary
