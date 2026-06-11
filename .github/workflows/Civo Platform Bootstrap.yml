@@ -1,4 +1,4 @@
-name: Civo Platform Bootstrap
+name: Civo Infrastructure Schedule
 
 on:
   workflow_run:
