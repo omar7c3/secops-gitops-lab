@@ -370,7 +370,7 @@ jobs:
           echo "  Download kubeconfig:"
           echo "  az storage blob download \\"
           echo "    --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \\"
-          echo "    --container-name tfstate \\"
+          echo "    --container-name ${{ secrets.CONTAINER_NAME }} \\"
           echo "    --name civo-kubeconfig.yaml \\"
           echo "    --file ~/.kube/civo-kubeconfig.yaml \\"
           echo "    --auth-mode login"
