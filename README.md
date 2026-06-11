@@ -1,14 +1,16 @@
 # SecOps GitOps Lab
 
-An interactive demo environment showing real Kubernetes attack scenarios and how
-GitOps-driven security controls detect, block, and recover from them.
-Built as a portfolio project for cloud / infra / infosec / DevOps leadership roles.
+An interactive demo environment showing real Kubernetes attack scenarios — and how GitOps-driven security controls detect, block, and recover from them. Built as a portfolio project for cloud, infra, infosec, and DevOps leadership roles.
+
+Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll need a token to get in, and an admin interface is available at [secops-demo.omar7c3.win/admin](https://secops-demo.omar7c3.win/admin). The environment runs weekdays only, 8AM–5PM ET, with automated cluster lifecycle management to keep costs down.
+
+---
 
 ## What It Demonstrates
 
 | Skill | Evidence |
 |---|---|
-| Cloud / Infrastructure | Terraform, AKS, cost optimisation, auto-stop scheduling |
+| Cloud / Infrastructure | Terraform, AKS, Civo, cost optimisation — Civo has no native auto-stop, so a GitHub Actions workflow was engineered to fill the gap: scheduled cluster create/destroy, state management via Azure Storage backend, kubeconfig lifecycle, SQLite backup/restore, Cloudflare DNS updates, and PVC cleanup to unblock network deletion |
 | GitOps / DevOps | ArgoCD drift detection, reconciliation, Git as single source of truth |
 | Information Security | Falco runtime detection, Kyverno admission policies, real attack chains |
 | Networking | NetworkPolicy enforcement, lateral movement demonstration |
@@ -19,33 +21,27 @@ Built as a portfolio project for cloud / infra / infosec / DevOps leadership rol
 
 ## The Scenarios
 
-Each scenario has two modes: **With Controls** (defences active) and **Allow Attack** (controlled
-misconfiguration to show full blast radius). A proof phase runs after every attack to confirm
-the controls are restored.
+Each scenario runs in two modes: **With Controls** (defences active) and **Allow Attack** (controlled misconfiguration to show the full blast radius). A proof phase runs after every attack to confirm the controls are restored.
 
 ### Scenario 1 — Privilege Escalation
 
-A pod with an over-permissioned `cluster-admin` service account reads its mounted token and
-uses it to delete Kyverno admission policies, suspend ArgoCD sync, create a privileged pod
-with the node filesystem mounted, and read cluster certificates.
+A pod with an over-permissioned `cluster-admin` service account reads its mounted token and uses it to delete Kyverno admission policies, suspend ArgoCD sync, create a privileged pod with the node filesystem mounted, and read cluster certificates.
 
 | Mode | What happens |
 |---|---|
-| **With Controls** | `automountServiceAccountToken: false` — no token mounted, attack stops at step 1 |
-| **Allow Attack** | Full attack chain runs. Cluster stays compromised until visitor clicks **Restore Protection**. Dwell time tracked. Proof phase follows — same attack, blocked. |
+| **With Controls** | `automountServiceAccountToken: false` — no token is mounted, so the attack stops at step 1 |
+| **Allow Attack** | The full attack chain runs. The cluster stays compromised until the visitor clicks **Restore Protection**. Dwell time is tracked. A proof phase follows — same attack, blocked. |
 
 **Controls in play:** `automountServiceAccountToken: false` · Kyverno `no-privileged-containers` · Kyverno `no-hostpath-mount` · ArgoCD self-heal
 
 ### Scenario 2 — Lateral Movement via NetworkPolicy Bypass
 
-A pod with narrowly scoped NetworkPolicy admin rights reads its token and deletes the
-`deny-all` NetworkPolicy. Unlike Scenario 1 it cannot suspend ArgoCD — the lateral movement
-window is bounded by GitOps reconciliation (~30s).
+A pod with narrowly scoped NetworkPolicy admin rights reads its token and deletes the `deny-all` NetworkPolicy. Unlike Scenario 1, it can't suspend ArgoCD — so the lateral movement window is bounded by GitOps reconciliation (~30s).
 
 | Mode | What happens |
 |---|---|
 | **With Controls** | Kyverno `protect-networkpolicies` blocks the deletion at admission. Window: 0 seconds. |
-| **Allow Attack** | `protect-networkpolicies` removed, window opens, internal services probed. ArgoCD auto-recovers in ~30s. Proof phase follows — blocked at admission. |
+| **Allow Attack** | `protect-networkpolicies` is removed, the window opens, and internal services are probed. ArgoCD auto-recovers in ~30s. A proof phase follows — blocked at admission. |
 
 **Controls in play:** Kyverno `protect-networkpolicies` · ArgoCD auto-reconcile · `deny-all` NetworkPolicy
 
@@ -61,20 +57,51 @@ Requirements: Windows · Docker Desktop · WSL2 (Ubuntu, kernel 5.8+)
 git clone https://github.com/omar7c3/secops-gitops-lab.git
 cd secops-gitops-lab
 .\infra\setup.ps1
-# Select: [1] Local (k3d)
+# Select: [1] Local — k3s via k3d (Docker Desktop + WSL2, zero cost)
 ```
 
-Setup installs k3d, deploys ArgoCD, Kyverno, Falco, and the full application stack.
-Takes ~5 minutes. Access the UI at `http://localhost:30080`.
+Setup installs k3d, deploys ArgoCD, Kyverno, Falco, and the full application stack. Takes around 5 minutes. The UI is at `http://localhost:30080`.
 
-### Cloud (AKS — ~$8-10/mo with auto-stop)
+### Cloud (AKS — ~$14–15/mo with auto-stop)
 
 Requirements: Azure CLI · Terraform · kubectl · helm
 
 ```powershell
 .\infra\setup.ps1
-# Select: [2] Cloud (AKS)
+# Select: [2] Cloud — Azure AKS (Terraform, ~$14-15/mo with auto-stop)
 ```
+
+### Cloud (Civo — ~$6–7/mo with engineered auto-stop, down from $22/mo 24/7)
+
+Two options here.
+
+**Option 1 — via setup script**
+
+Requirements: Civo CLI · Terraform · kubectl · helm
+
+```powershell
+.\infra\setup.ps1
+# Select: [3] Cloud — Civo Kubernetes (Terraform, ~$6-7/mo · engineered auto-stop — no native equivalent)
+```
+
+**Option 2 — fully managed via GitHub Actions**
+
+Just configure the repository secrets below and the workflows handle everything automatically: cluster provisioning, platform install, database backup/restore, DNS updates, and scheduled shutdown.
+
+| Secret | Description |
+|---|---|
+| `AZURE_CLIENT_ID` | Entra ID client ID used for OIDC authentication |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID that hosts the resources |
+| `AZURE_TENANT_ID` | Entra ID tenant ID |
+| `STORAGE_ACCOUNT_NAME` | Azure storage account used as backend for cluster state, DB backups, kubeconfig, etc. |
+| `CONTAINER_NAME` | The blob container within the storage account |
+| `CF_ZONE_ID` | Cloudflare zone ID |
+| `CF_RECORD_NAME` | Cloudflare DNS record name used as the frontend URL |
+| `CF_RECORD_ID` | Cloudflare DNS record ID — updated on every cluster creation |
+| `CF_TOKEN` | Cloudflare API token used to automate DNS record updates |
+| `CIVO_TOKEN` | Civo API token used to manage the cluster lifecycle |
+| `ADMIN_PASSWORD` | Password for the admin portal |
+| `JWT_SECRET` | Secret used to issue and verify user tokens |
 
 ---
 
@@ -122,11 +149,11 @@ Single AKS cluster (2x Standard_B2s nodes) or local k3d (2 agents + server)
 
 ## Access
 
-The demo is token-gated. Visitors need a token issued by the admin.
+The demo is token-gated — visitors need a token issued by the admin.
 
-- **Visitor UI:** `http://<host>/` — enter token to start a 30-minute session
+- **Visitor UI:** `http://<host>/` — enter a token to start a 30-minute session
 - **Admin UI:** `http://<host>/admin` — password-protected dashboard for token management, session release, and force cluster reset
-- Only one active session is permitted at a time across all tokens
+- Only one active session is permitted at a time, across all tokens
 
 ---
 
@@ -134,61 +161,64 @@ The demo is token-gated. Visitors need a token issued by the admin.
 
 ```
 secops-gitops-lab/
+├── .github/
+│   └── workflows/
+│       ├── civo-infrastructure-schedule.yml  # Scheduled cluster lifecycle — create at 8AM, destroy at 5PM ET (weekdays)
+│       └── civo-platform-bootstrap.yml       # Post-create — installs platform stack, restores DB, updates DNS
 ├── infra/
-│   ├── setup.ps1              # Interactive setup — local or cloud
-│   └── terraform/             # AKS provisioning (modules: cluster, networking)
+│   ├── setup.ps1                             # Interactive setup — local or cloud
+│   ├── aks-terraform/                        # AKS provisioning (modules: cluster, networking)
+│   └── civo-terraform/                       # Civo provisioning (modules: cluster, networking)
 ├── gitops/
-│   ├── apps/                  # ArgoCD Application manifests
-│   ├── policies/              # Kyverno ClusterPolicy definitions
-│   └── base/                  # All Kubernetes manifests (deployments, services,
-│                              #   NetworkPolicies, RBAC, ConfigMaps, PVCs)
+│   ├── apps/                                 # ArgoCD Application manifests
+│   ├── policies/                             # Kyverno ClusterPolicy definitions
+│   └── base/                                 # All Kubernetes manifests (deployments, services,
+│                                             # NetworkPolicies, RBAC, ConfigMaps, PVCs)
 ├── backend/
-│   ├── Dockerfile             # Build context is backend/ (scenarios/ lives here too)
+│   ├── Dockerfile                            # Build context is backend/ (scenarios/ lives here too)
 │   ├── scenarios/
 │   │   ├── 01-privilege-escalation/
-│   │   │   ├── attack.sh      # Runs inside target-app pod via kubectl exec
-│   │   │   └── proof.sh       # Re-runs attack after reconciliation to prove controls hold
+│   │   │   ├── attack.sh                     # Runs inside target-app pod via kubectl exec
+│   │   │   └── proof.sh                      # Re-runs attack after reconciliation to prove controls hold
 │   │   └── 02-networkpolicy-bypass/
 │   │       ├── attack.sh
 │   │       └── proof.sh
 │   └── src/
-│       ├── index.js           # Express app — route registration
-│       ├── db.js              # SQLite init (sessions, tokens, events, audit log)
-│       ├── watchdog.js        # Cluster dirty-check and auto-reset
+│       ├── index.js                          # Express app — route registration
+│       ├── db.js                             # SQLite init (sessions, tokens, events, audit log)
+│       ├── watchdog.js                       # Cluster dirty-check and auto-reset
 │       └── routes/
-│           ├── token-public.js    # POST /token/validate
-│           ├── token-admin.js     # Token generate / revoke (admin JWT)
-│           ├── sessions.js        # Session end / status
-│           ├── events.js          # GET /events/feed + POST /internal webhook
-│           ├── scenarios.js       # Scenario run / restore / proof / reset
-│           ├── argocd.js          # ArgoCD state poller
-│           ├── admin.js           # Admin dashboard + force reset
-│           ├── k8s-client.js      # kubectl-based K8s operations
-│           └── falco-webhook.js   # Falco Sidekick alert receiver
+│           ├── token-public.js               # POST /token/validate
+│           ├── token-admin.js                # Token generate / revoke (admin JWT)
+│           ├── sessions.js                   # Session end / status
+│           ├── events.js                     # GET /events/feed + POST /internal webhook
+│           ├── scenarios.js                  # Scenario run / restore / proof / reset
+│           ├── argocd.js                     # ArgoCD state poller
+│           ├── admin.js                      # Admin dashboard + force reset
+│           ├── k8s-client.js                 # kubectl-based K8s operations
+│           └── falco-webhook.js              # Falco Sidekick alert receiver
 ├── frontend/
 │   └── src/
 │       ├── views/
 │       │   ├── TokenGate.vue
-│       │   ├── DemoView.vue       # 3-panel demo UI
+│       │   ├── DemoView.vue                  # 3-panel demo UI
 │       │   └── AdminView.vue
 │       ├── components/
-│       │   ├── ModeModal.vue      # Scenario context + mode selection
+│       │   ├── ModeModal.vue                 # Scenario context + mode selection
 │       │   ├── TimelineBar.vue
 │       │   └── StolenDataPanel.vue
 │       └── stores/
-│           ├── session.js         # Pinia session store + axios 401 interceptor
-│           └── scenario.js        # Pinia scenario store + polling
-└── config.yaml                    # All tuneable parameters (session duration,
-                                   #   watchdog, messages, reconcile timeouts)
+│           ├── session.js                    # Pinia session store + axios 401 interceptor
+│           └── scenario.js                   # Pinia scenario store + polling
+└── config.yaml                               # All tuneable parameters (session duration,
+                                              # watchdog, messages, reconcile timeouts)
 ```
 
 ---
 
 ## Config
 
-All tuneable parameters live in `config.yaml` at the repo root and are mounted into
-the backend pod via a ConfigMap. No code changes needed to adjust session duration,
-watchdog behaviour, reconcile timeouts, or user-facing messages.
+All tuneable parameters live in `config.yaml` at the repo root and are mounted into the backend pod via a ConfigMap — no code changes needed to adjust session duration, watchdog behaviour, reconcile timeouts, or user-facing messages.
 
 ```yaml
 session:
@@ -206,20 +236,16 @@ watchdog:
 
 ## How Attack Scripts Work
 
-Scripts live in `backend/scenarios/` and are baked into the backend Docker image.
-When a scenario runs, the backend:
+Scripts live in `backend/scenarios/` and are baked into the backend Docker image. When a scenario runs, the backend:
 
 1. Patches the `target-app` deployment to swap the service account (Allow Attack mode)
 2. Waits for the new pod to reach `Running` state (handles rollout timing)
 3. `kubectl cp`s the script into the pod's `/tmp` directory
 4. `kubectl exec`s it — the script runs inside the pod using the mounted SA token
 5. Each step emits a structured event via `POST /internal` to the backend
-6. The frontend polls `/events/feed` every 2s and renders events in the Events Feed panel
+6. The frontend polls `/events/feed` every 2s and renders events in the Attack Feed panel
 
-For controlled mode (With Controls), the pod has no token — the script exits at step 1
-and auto-triggers the proof phase. For Allow Attack in Scenario 1, state transitions to
-`waiting` and the visitor manually triggers restore. For Scenario 2, ArgoCD auto-recovers
-and proof runs automatically after the reconcile window.
+In controlled mode (With Controls), the pod has no token — the script exits at step 1 and auto-triggers the proof phase. For Allow Attack in Scenario 1, state transitions to `waiting` and the visitor manually triggers restore. For Scenario 2, ArgoCD auto-recovers and proof runs automatically after the reconcile window closes.
 
 ---
 
@@ -228,5 +254,7 @@ and proof runs automatically after the reconcile window.
 | Mode | Est. Monthly |
 |---|---|
 | AKS always-on | ~$50/mo |
-| AKS with auto-stop (Mon–Fri 8am–7pm) | ~$8–10/mo |
+| AKS with auto-stop (Mon–Fri 8AM–5PM) | ~$14–15/mo |
+| Civo always-on | ~$22/mo |
+| Civo with auto-stop (Mon–Fri 8AM–5PM) | ~$6–7/mo |
 | Local k3d | $0 |
