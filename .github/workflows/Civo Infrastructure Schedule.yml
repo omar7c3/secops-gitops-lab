@@ -216,6 +216,35 @@ jobs:
           kubectl config use-context ${{ steps.cluster-info.outputs.cluster_name }}
           kubectl get nodes
 
+      - name: Backup SQLite database to Azure Storage
+        run: |
+          echo "[$(date)] Finding secops-backend pod..."
+          POD=$(kubectl get pod -n secops-lab \
+            -l app=secops-backend \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+          if [ -z "$POD" ]; then
+            echo "[$(date)] No secops-backend pod found — skipping backup"
+            exit 0
+          fi
+
+          echo "[$(date)] Copying database from pod: $POD"
+          kubectl cp secops-lab/$POD:/data/secops-lab.db ./secops-lab.db || true
+
+          if [ -f "./secops-lab.db" ]; then
+            echo "[$(date)] Uploading database to Azure Storage..."
+            az storage blob upload \
+              --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+              --container-name ${{ secrets.CONTAINER_NAME }} \
+              --name secops-lab.db \
+              --file ./secops-lab.db \
+              --overwrite \
+              --auth-mode login
+            echo "[$(date)] Database backup complete"
+          else
+            echo "[$(date)] Database file not found — skipping upload"
+          fi
+
       - name: Disable ArgoCD auto-sync
         run: |
           echo "[$(date)] Disabling ArgoCD auto-sync to prevent PVC recreation..."
@@ -227,6 +256,40 @@ jobs:
               --type=merge \
               -p '{"spec":{"syncPolicy":null}}' || true
           done
+
+          echo "[$(date)] Giving ArgoCD time to pick up config change..."
+          sleep 5
+
+          echo "[$(date)] Verifying auto-sync is disabled..."
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+
+            # Check spec is patched AND no operations running
+            SYNC_ENABLED=$(kubectl get applications -n argocd -o json 2>/dev/null | \
+              jq '[.items[] | select(.spec.syncPolicy != null and .spec.syncPolicy.automated != null)] | length' \
+              || echo "0")
+
+            SYNC_RUNNING=$(kubectl get applications -n argocd -o json 2>/dev/null | \
+              jq '[.items[] | select(.status.operationState.phase == "Running")] | length' \
+              || echo "0")
+
+            SYNC_ENABLED=${SYNC_ENABLED:-0}
+            SYNC_RUNNING=${SYNC_RUNNING:-0}
+
+            echo "[$(date)] Attempt $ATTEMPT/$MAX_ATTEMPTS — auto-sync enabled: $SYNC_ENABLED | operations running: $SYNC_RUNNING"
+
+            if [ "$SYNC_ENABLED" -eq 0 ] && [ "$SYNC_RUNNING" -eq 0 ]; then
+              echo "[$(date)] Auto-sync disabled and no operations running — safe to proceed"
+              break
+            fi
+
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "[$(date)] Warning — proceeding anyway after max attempts"
+            else
+              sleep 3
+            fi
+          done
+
           echo "[$(date)] Auto-sync disabled for all apps"
 
       - name: Delete secops-backend deployment and PVC

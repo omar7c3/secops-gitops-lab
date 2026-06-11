@@ -19,7 +19,8 @@ function initDb() {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 
   db = new Database(DB_PATH)
-  db.pragma('journal_mode = WAL')   // Better concurrent read performance
+  //db.pragma('journal_mode = WAL')   // Better concurrent read performance
+  db.pragma('journal_mode = DELETE')  // Simple rollback journal — no WAL sidecar files
   db.pragma('foreign_keys = ON')
 
   // ── Tokens ──────────────────────────────────────────────────────────────────

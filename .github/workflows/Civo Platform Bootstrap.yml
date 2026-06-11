@@ -244,6 +244,37 @@ jobs:
             -n ${{ env.NAMESPACE }} \
             ARGOCD_TOKEN="${{ steps.argocd-config.outputs.api_token }}"
           echo "ArgoCD token injected into secops-backend"
+      
+      - name: Restore SQLite database from Azure Storage
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          echo "[$(date)] Checking for database backup in Azure Storage..."
+          az storage blob download \
+            --account-name ${{ secrets.STORAGE_ACCOUNT_NAME }} \
+            --container-name ${{ secrets.CONTAINER_NAME }} \
+            --name secops-lab.db \
+            --file ./secops-lab.db \
+            --auth-mode login 2>/dev/null || true
+
+          if [ ! -f "./secops-lab.db" ]; then
+            echo "[$(date)] No backup found — fresh database will be used"
+            exit 0
+          fi
+
+          POD=$(kubectl get pod -n secops-lab \
+            -l app=secops-backend \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          echo "[$(date)] Restoring database to pod: $POD"
+          kubectl cp ./secops-lab.db \
+            secops-lab/$POD:/data/secops-lab.db
+
+          echo "[$(date)] Restarting secops-backend to pick up restored database..."
+          kubectl rollout restart deployment/secops-backend -n secops-lab
+          kubectl rollout status deployment/secops-backend \
+            -n secops-lab --timeout=120s
+
+          echo "[$(date)] Database restore complete"
 
       # ── Kyverno ──────────────────────────────────────────────────────────────
       - name: Install Kyverno
