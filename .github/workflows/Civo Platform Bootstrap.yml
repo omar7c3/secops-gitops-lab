@@ -1,8 +1,8 @@
-name: Civo Infrastructure Schedule
+name: Civo Platform Bootstrap
 
 on:
   workflow_run:
-    workflows: ["Civo Terraform Schedule"]
+    workflows: ["Civo Infrastructure Schedule"]
     types: [completed]
   workflow_dispatch:   # manual trigger for re-installs
 
