@@ -1,10 +1,10 @@
 # SecOps GitOps Lab
 
-An interactive demo environment showing real Kubernetes attack scenarios — and how GitOps-driven security controls detect, block, and recover from them. Built as a portfolio project for cloud, infra, infosec, and DevOps leadership roles.
+An interactive demo environment showing real Kubernetes attack scenarios and how GitOps-driven security controls detect, block, and recover from them. Built as a portfolio project for cloud, infra, infosec, and DevOps leadership roles.
 
-Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll need a token to get in, and an admin interface is available at [secops-demo.omar7c3.win/admin](https://secops-demo.omar7c3.win/admin). The environment runs weekdays only, 8AM–5PM ET, with automated cluster lifecycle management to keep costs down. Scheduling is handled via Azure Logic App due to GitHub Actions cron reliability limitations — the native cron config remains in the workflow for reference.
+Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll need a token to get in, with an admin interface at [secops-demo.omar7c3.win/admin](https://secops-demo.omar7c3.win/admin). Runs weekdays only, 8AM–5PM ET, on an automated cluster lifecycle to keep costs to ~$6–7/mo. Scheduling is handled via Azure Logic App due to GitHub Actions cron reliability limitations — the native cron config remains in the workflow for reference.
 
-To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar-al-abayechi) — or use the shared token `DEMO-WJEZ-MJ75` (note: only one active session at a time).
+To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar-al-abayechi) or use the shared token `DEMO-WJEZ-MJ75`. Note that only one active session is permitted at a time.
 
 ---
 
@@ -12,13 +12,13 @@ To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar
 
 | Skill | Evidence |
 |---|---|
-| Cloud / Infrastructure | Terraform, AKS, Civo, cost optimisation — Civo has no native auto-stop, so a GitHub Actions workflow was engineered to fill the gap: scheduled cluster create/destroy, state management via Azure Storage backend, kubeconfig lifecycle, SQLite backup/restore, Cloudflare DNS updates, and PVC cleanup to unblock network deletion |
+| Cloud / Infrastructure | Terraform, AKS, Civo, cost optimisation. Civo has no native auto-stop, so a GitHub Actions workflow was engineered to fill the gap: scheduled cluster create/destroy, state management via Azure Storage backend, kubeconfig lifecycle, SQLite backup/restore, Cloudflare DNS updates, and PVC cleanup to unblock network deletion |
 | Automation & Scripting | GitHub Actions workflows for full cluster lifecycle management, PowerShell setup scripts for local and cloud deployment paths, bash attack/proof scripts executed via kubectl exec |
 | Software Engineering | Node.js/Express backend, Vue 3 frontend, SQLite persistence, JWT session management, real-time event feed, ArgoCD API integration, Falco webhook receiver |
 | GitOps / DevOps | ArgoCD drift detection, reconciliation, Git as single source of truth |
 | Information Security | Falco runtime detection, Kyverno admission policies, real attack chains |
 | Networking | NetworkPolicy enforcement, lateral movement demonstration |
-| Architecture Leadership | Scoped design decisions, dual deployment path (local + cloud) |
+| Architecture Leadership | Scoped design decisions, dual deployment path (local and cloud) |
 | Product Thinking | Token-gated demo, interactive scenario modes, session management |
 
 ---
@@ -33,19 +33,19 @@ A pod with an over-permissioned `cluster-admin` service account reads its mounte
 
 | Mode | What happens |
 |---|---|
-| **With Controls** | `automountServiceAccountToken: false` — no token is mounted, so the attack stops at step 1 |
-| **Allow Attack** | The full attack chain runs. The cluster stays compromised until the visitor clicks **Restore Protection**. Dwell time is tracked. A proof phase follows — same attack, blocked. |
+| **With Controls** | `automountServiceAccountToken: false` means no token is mounted, so the attack stops at step 1 |
+| **Allow Attack** | The full attack chain runs. The cluster stays compromised until the visitor clicks **Restore Protection**. Dwell time is tracked. A proof phase follows showing the same attack blocked. |
 
 **Controls in play:** `automountServiceAccountToken: false` · Kyverno `no-privileged-containers` · Kyverno `no-hostpath-mount` · ArgoCD self-heal
 
 ### Scenario 2 — Lateral Movement via NetworkPolicy Bypass
 
-A pod with narrowly scoped NetworkPolicy admin rights reads its token and deletes the `deny-all` NetworkPolicy. Unlike Scenario 1, it can't suspend ArgoCD — so the lateral movement window is bounded by GitOps reconciliation (~30s).
+A pod with narrowly scoped NetworkPolicy admin rights reads its token and deletes the `deny-all` NetworkPolicy. Unlike Scenario 1, it cannot suspend ArgoCD, so the lateral movement window is bounded by GitOps reconciliation (around 30 seconds).
 
 | Mode | What happens |
 |---|---|
 | **With Controls** | Kyverno `protect-networkpolicies` blocks the deletion at admission. Window: 0 seconds. |
-| **Allow Attack** | `protect-networkpolicies` is removed, the window opens, and internal services are probed. ArgoCD auto-recovers in ~30s. A proof phase follows — blocked at admission. |
+| **Allow Attack** | `protect-networkpolicies` is removed, the window opens, and internal services are probed. ArgoCD auto-recovers in about 30 seconds. A proof phase follows showing the attack blocked at admission. |
 
 **Controls in play:** Kyverno `protect-networkpolicies` · ArgoCD auto-reconcile · `deny-all` NetworkPolicy
 
@@ -101,7 +101,7 @@ Just configure the repository secrets below and the workflows handle everything 
 | `CONTAINER_NAME` | The blob container within the storage account |
 | `CF_ZONE_ID` | Cloudflare zone ID |
 | `CF_RECORD_NAME` | Cloudflare DNS record name used as the frontend URL |
-| `CF_RECORD_ID` | Cloudflare DNS record ID — updated on every cluster creation |
+| `CF_RECORD_ID` | Cloudflare DNS record ID, updated on every cluster creation |
 | `CF_TOKEN` | Cloudflare API token used to automate DNS record updates |
 | `CIVO_TOKEN` | Civo API token used to manage the cluster lifecycle |
 | `ADMIN_PASSWORD` | Password for the admin portal |
@@ -114,7 +114,7 @@ Just configure the repository secrets below and the workflows handle everything 
 ```
 Single AKS cluster (2x Standard_B2s nodes) or local k3d (2 agents + server)
 │
-├── ArgoCD          — GitOps engine (trimmed — no Dex, no ApplicationSet)
+├── ArgoCD          — GitOps engine (trimmed, no Dex, no ApplicationSet)
 │   ├── secops-lab              app — workloads, NetworkPolicies
 │   └── secops-lab-policies     app — Kyverno ClusterPolicies
 │
@@ -153,7 +153,7 @@ Single AKS cluster (2x Standard_B2s nodes) or local k3d (2 agents + server)
 
 ## Access
 
-The demo is token-gated — visitors need a token issued by the admin.
+The demo is token-gated. Visitors need a token issued by the admin.
 
 - **Visitor UI:** `http://<host>/` — enter a token to start a 30-minute session
 - **Admin UI:** `http://<host>/admin` — password-protected dashboard for token management, session release, and force cluster reset
@@ -222,7 +222,7 @@ secops-gitops-lab/
 
 ## Config
 
-All tuneable parameters live in `config.yaml` at the repo root and are mounted into the backend pod via a ConfigMap — no code changes needed to adjust session duration, watchdog behaviour, reconcile timeouts, or user-facing messages.
+All tuneable parameters live in `config.yaml` at the repo root and are mounted into the backend pod via a ConfigMap. No code changes are needed to adjust session duration, watchdog behaviour, reconcile timeouts, or user-facing messages.
 
 ```yaml
 session:
@@ -249,7 +249,7 @@ Scripts live in `backend/scenarios/` and are baked into the backend Docker image
 5. Each step emits a structured event via `POST /internal` to the backend
 6. The frontend polls `/events/feed` every 2s and renders events in the Attack Feed panel
 
-In controlled mode (With Controls), the pod has no token — the script exits at step 1 and auto-triggers the proof phase. For Allow Attack in Scenario 1, state transitions to `waiting` and the visitor manually triggers restore. For Scenario 2, ArgoCD auto-recovers and proof runs automatically after the reconcile window closes.
+In controlled mode (With Controls), the pod has no token so the script exits at step 1 and auto-triggers the proof phase. For Allow Attack in Scenario 1, state transitions to `waiting` and the visitor manually triggers restore. For Scenario 2, ArgoCD auto-recovers and proof runs automatically after the reconcile window closes.
 
 ---
 
