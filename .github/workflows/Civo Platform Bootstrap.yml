@@ -217,6 +217,49 @@ jobs:
           echo "api_token=$API_TOKEN" >> $GITHUB_OUTPUT
           echo "ArgoCD API token configured"
 
+      # ── Kyverno ──────────────────────────────────────────────────────────────
+      - name: Install Kyverno
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm upgrade --install kyverno kyverno/kyverno \
+            --namespace kyverno \
+            --create-namespace \
+            --set replicaCount=1 \
+            --set admissionController.replicas=1 \
+            --wait \
+            --timeout 5m
+          echo "Kyverno installed"
+
+      # ── Falco ────────────────────────────────────────────────────────────────
+      - name: Install Falco
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          helm upgrade --install falco falcosecurity/falco \
+            --namespace falco \
+            --create-namespace \
+            --set driver.kind=auto \
+            --set falcosidekick.enabled=true \
+            --set "falcosidekick.config.webhook.address=http://secops-backend.${{ env.NAMESPACE }}.svc.cluster.local:3000/events/falco" \
+            --set falcosidekick.config.webhook.checkcert=false \
+            --wait \
+            --timeout 5m
+          echo "Falco installed"
+
+      # ── GitOps manifests ──────────────────────────────────────────────────────
+      - name: Apply GitOps manifests
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          echo "Applying Kyverno policies..."
+          kubectl apply -f gitops/policies/ -n ${{ env.NAMESPACE }}
+
+          echo "Applying base workloads..."
+          kubectl apply -f gitops/base/ -n ${{ env.NAMESPACE }}
+
+          echo "Registering ArgoCD applications..."
+          kubectl apply -f gitops/apps/ -n argocd
+
+          echo "GitOps manifests applied"
+
       - name: Wait for secops-backend deployment
         if: steps.check-cluster.outputs.exists == 'true'
         run: |
@@ -279,49 +322,6 @@ jobs:
             -n secops-lab --timeout=120s
 
           echo "[$(date)] Database restore complete"
-
-      # ── Kyverno ──────────────────────────────────────────────────────────────
-      - name: Install Kyverno
-        if: steps.check-cluster.outputs.exists == 'true'
-        run: |
-          helm upgrade --install kyverno kyverno/kyverno \
-            --namespace kyverno \
-            --create-namespace \
-            --set replicaCount=1 \
-            --set admissionController.replicas=1 \
-            --wait \
-            --timeout 5m
-          echo "Kyverno installed"
-
-      # ── Falco ────────────────────────────────────────────────────────────────
-      - name: Install Falco
-        if: steps.check-cluster.outputs.exists == 'true'
-        run: |
-          helm upgrade --install falco falcosecurity/falco \
-            --namespace falco \
-            --create-namespace \
-            --set driver.kind=auto \
-            --set falcosidekick.enabled=true \
-            --set "falcosidekick.config.webhook.address=http://secops-backend.${{ env.NAMESPACE }}.svc.cluster.local:3000/events/falco" \
-            --set falcosidekick.config.webhook.checkcert=false \
-            --wait \
-            --timeout 5m
-          echo "Falco installed"
-
-      # ── GitOps manifests ──────────────────────────────────────────────────────
-      - name: Apply GitOps manifests
-        if: steps.check-cluster.outputs.exists == 'true'
-        run: |
-          echo "Applying Kyverno policies..."
-          kubectl apply -f gitops/policies/ -n ${{ env.NAMESPACE }}
-
-          echo "Applying base workloads..."
-          kubectl apply -f gitops/base/ -n ${{ env.NAMESPACE }}
-
-          echo "Registering ArgoCD applications..."
-          kubectl apply -f gitops/apps/ -n argocd
-
-          echo "GitOps manifests applied"
 
       # ── Summary ───────────────────────────────────────────────────────────────
       - name: Print summary
