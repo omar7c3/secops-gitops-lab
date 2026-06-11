@@ -65,6 +65,11 @@ resource "civo_kubernetes_cluster" "lab" {
   firewall_id = civo_firewall.lab.id
   cni         = var.cni 
 
+  depends_on = [
+    civo_firewall.lab,
+    civo_network.lab
+  ]
+
   # Closest equivalent to Standard_B2ps_v2 (2 vCPU / 8 GB) on Civo.
   # g4s.kube.medium = 2 vCPU / 4 GB / 50 GB (~$11/mo)
   # g4s.kube.large  = 4 vCPU / 8 GB / 50 GB (~$20/mo) — closer RAM match
