@@ -323,6 +323,36 @@ jobs:
 
           echo "[$(date)] Database restore complete"
 
+      - name: Update Cloudflare DNS
+        if: steps.check-cluster.outputs.exists == 'true'
+        run: |
+          echo "[$(date)] Getting LoadBalancer IP..."
+          IP=""
+          ATTEMPTS=0
+          while [ -z "$IP" ] && [ $ATTEMPTS -lt 12 ]; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            IP=$(kubectl get svc secops-frontend -n secops-lab \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            if [ -z "$IP" ]; then
+              echo "Attempt $ATTEMPTS/12 — waiting for IP..."
+              sleep 10
+            fi
+          done
+
+          if [ -z "$IP" ]; then
+            echo "[$(date)] LoadBalancer IP never assigned — skipping DNS update"
+            exit 0
+          fi
+
+          echo "[$(date)] Updating Cloudflare DNS → $IP"
+          curl -sf -X PUT \
+            "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/dns_records/${{ secrets.CF_RECORD_ID }}" \
+            -H "Authorization: Bearer ${{ secrets.CF_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"type\":\"A\",\"name\":\"${{ secrets.CF_DOMAIN }}\",\"content\":\"$IP\",\"ttl\":60,\"proxied\":true}"
+
+          echo "[$(date)] DNS updated — ${{ secrets.CF_DOMAIN }} → $IP"
+
       # ── Summary ───────────────────────────────────────────────────────────────
       - name: Print summary
         if: steps.check-cluster.outputs.exists == 'true'
