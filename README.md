@@ -4,6 +4,8 @@ An interactive demo environment showing real Kubernetes attack scenarios — and
 
 Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll need a token to get in, and an admin interface is available at [secops-demo.omar7c3.win/admin](https://secops-demo.omar7c3.win/admin). The environment runs weekdays only, 8AM–5PM ET, with automated cluster lifecycle management to keep costs down.
 
+To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar-al-abayechi) — or use the shared token `DEMO-WJEZ-MJ75` (note: only one active session at a time).
+
 ---
 
 ## What It Demonstrates
@@ -11,6 +13,8 @@ Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll n
 | Skill | Evidence |
 |---|---|
 | Cloud / Infrastructure | Terraform, AKS, Civo, cost optimisation — Civo has no native auto-stop, so a GitHub Actions workflow was engineered to fill the gap: scheduled cluster create/destroy, state management via Azure Storage backend, kubeconfig lifecycle, SQLite backup/restore, Cloudflare DNS updates, and PVC cleanup to unblock network deletion |
+| Automation & Scripting | GitHub Actions workflows for full cluster lifecycle management, PowerShell setup scripts for local and cloud deployment paths, bash attack/proof scripts executed via kubectl exec |
+| Software Engineering | Node.js/Express backend, Vue 3 frontend, SQLite persistence, JWT session management, real-time event feed, ArgoCD API integration, Falco webhook receiver |
 | GitOps / DevOps | ArgoCD drift detection, reconciliation, Git as single source of truth |
 | Information Security | Falco runtime detection, Kyverno admission policies, real attack chains |
 | Networking | NetworkPolicy enforcement, lateral movement demonstration |
