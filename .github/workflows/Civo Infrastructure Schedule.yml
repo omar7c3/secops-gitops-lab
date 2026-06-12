@@ -318,7 +318,7 @@ jobs:
       - name: Wait for Civo volumes to be fully released
         run: |
           REGION="NYC1"
-          MAX_ATTEMPTS=20
+          MAX_ATTEMPTS=8
           ATTEMPT=0
 
           while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -348,6 +348,16 @@ jobs:
               sleep 15
             fi
           done
+
+          VOLUME_JSON=$(civo volume list --region "$REGION" -o json 2>/dev/null || echo "[]")
+          VOLUME_COUNT=$(echo "$VOLUME_JSON" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo "0")
+          VOLUME_COUNT=${VOLUME_COUNT:-0}
+          if [ "$VOLUME_COUNT" -gt 0 ]; then
+            echo "Some volumes still remain after force delete - Civo volumes remaining: $VOLUME_COUNT"
+            exit 1
+          else
+              echo "[$(date)] All volumes deleted - Civo volumes remaining: $VOLUME_COUNT"
+          fi
 
       - name: Terraform Plan Destroy
         working-directory: ${{ env.TF_DIR }}
