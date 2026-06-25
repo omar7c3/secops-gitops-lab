@@ -4,7 +4,7 @@ An interactive demo environment showing real Kubernetes attack scenarios and how
 
 Live at [secops-demo.omar7c3.win](https://secops-demo.omar7c3.win/) — you'll need a token to get in, with an admin interface at [secops-demo.omar7c3.win/admin](https://secops-demo.omar7c3.win/admin). Runs weekdays only, 8AM–5PM ET, on an automated cluster lifecycle to keep costs to ~$6–7/mo. Scheduling is handled via Azure Logic App due to GitHub Actions cron reliability limitations — the native cron config remains in the workflow for reference.
 
-To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar-al-abayechi) or use the shared token `DEMO-WJEZ-MJ75`. Note that only one active session is permitted at a time.
+To try the demo, request a token via [LinkedIn](https://www.linkedin.com/in/omar-al-abayechi) or use the shared token `DEMO-ZGQ2-5MXU`. Note that only one active session is permitted at a time.
 
 ---
 
